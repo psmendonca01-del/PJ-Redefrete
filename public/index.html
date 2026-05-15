@@ -1,0 +1,457 @@
+﻿<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Redefrete Pagamentos PJ</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <section id="loginScreen" class="login-screen">
+      <form id="loginForm" class="login-card">
+        <img src="/assets/logo-redefrete-branco.png" alt="Redefrete" />
+        <div>
+          <p class="eyebrow">Controle financeiro PJ</p>
+          <h1>Acesso ao sistema</h1>
+        </div>
+        <label>E-mail<input name="email" autocomplete="username" required /></label>
+        <label>Senha<input name="senha" type="password" autocomplete="current-password" required /></label>
+        <button type="submit" class="primary">Entrar</button>
+        <p id="loginMessage" class="login-message"></p>
+      </form>
+    </section>
+    <aside class="side">
+      <img src="/assets/logo-redefrete-branco.png" alt="Redefrete" class="logo" />
+      <nav class="nav" aria-label="Navegacao principal">
+        <button class="nav-item active" data-view="dashboard">Painel</button>
+        <button class="nav-item" data-view="prestadores">Prestadores</button>
+        <button class="nav-item" data-view="adiantamentos">Adiantamentos</button>
+        <button class="nav-item" data-view="rescisoes">Rescisões</button>
+      </nav>
+      <button class="settings-button" data-view="configuracoes" type="button">Configurações</button>
+      <div class="side-note">
+        <span id="statusDot"></span>
+        <strong id="status">Conectando</strong>
+        <small>Banco MySQL Redefrete</small>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Controle financeiro PJ</p>
+          <h1 id="pageTitle">Painel</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="user-chip">
+            <strong id="currentUserName">-</strong>
+            <span id="currentUserPerfil">-</span>
+          </div>
+          <button id="logout" type="button">Sair</button>
+          <button id="refresh" class="primary">Atualizar</button>
+        </div>
+      </header>
+
+      <section id="dashboard" class="view active">
+        <div class="metrics">
+          <article>
+            <span>Prestadores ativos</span>
+            <strong id="metricPrestadores">0</strong>
+          </article>
+          <article>
+            <span>Adiantamentos em aberto</span>
+            <strong id="metricAdiantamentos">R$ 0,00</strong>
+          </article>
+          <article>
+            <span>Ultima folha</span>
+            <strong id="metricFolha">Sem fechamento</strong>
+          </article>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Folhas por competencia</h2>
+          </div>
+          <div class="table-wrap">
+            <table id="folhasTable"></table>
+          </div>
+        </div>
+        <div class="panel dept-panel">
+          <div class="panel-head">
+            <h2>Departamentos mes a mes</h2>
+            <span>Quantidade de pessoas e variacao</span>
+          </div>
+          <div id="deptCards" class="dept-cards"></div>
+          <div id="deptDrill" class="dept-drill"></div>
+        </div>
+      </section>
+
+      <section id="prestadores" class="view">
+        <div class="panel prestadores-panel">
+          <form id="prestadorForm" class="prestador-form prestador-modal" aria-hidden="true">
+            <div class="panel-head wide">
+              <h2 id="prestadorModalTitle">Cadastro do prestador</h2>
+              <button type="button" id="closePrestadorModal" class="icon-button" aria-label="Fechar">&times;</button>
+            </div>
+            <input type="hidden" name="id" />
+            <fieldset>
+              <legend>Dados pessoais e razão social</legend>
+              <label>Nome<input name="nome" required /></label>
+              <label>CPF<input name="cpf" required placeholder="000.000.000-00" /></label>
+              <label>CNPJ<input name="cnpj" required placeholder="00.000.000/0000-00" /></label>
+              <label>Razao social<input name="razao_social" required /></label>
+              <label>E-mail<input name="email" type="email" placeholder="prestador@email.com" /></label>
+              <label>Telefone<input name="telefone" placeholder="(00) 00000-0000" /></label>
+            </fieldset>
+            <fieldset>
+              <legend>Dados do contrato</legend>
+              <label>Funcao<select name="funcao_id"></select></label>
+              <label>Categoria<select name="categoria_id"></select></label>
+              <label>Projeto<select name="projeto_id"></select></label>
+              <label>Nível do cargo
+                <select name="cargo_nivel" required>
+                  <option value="operacao">Operação</option>
+                  <option value="gestao">Gestão</option>
+                </select>
+              </label>
+              <label>Unidade atendida<select name="unidade_id" required></select></label>
+              <label>Departamento<select name="departamento_id"></select></label>
+              <label>Admissao<input name="data_admissao" type="date" /></label>
+              <label>Data rescisao<input name="data_rescisao" type="date" /></label>
+              <label>Salario contrato<input name="salario_contrato" type="number" step="0.01" required /></label>
+              <label class="check"><input name="ativo" type="checkbox" checked /> Ativo</label>
+            </fieldset>
+            <fieldset>
+              <legend>Dados bancários</legend>
+              <label>Banco<input name="banco" /></label>
+              <label>Agencia<input name="agencia" /></label>
+              <label>Conta<input name="conta" /></label>
+              <label>CPF/CNPJ Pix<input name="pix_cpf_cnpj" /></label>
+            </fieldset>
+            <div class="actions wide">
+              <button type="button" id="clearPrestador">Limpar</button>
+              <button type="submit" class="primary">Salvar prestador</button>
+            </div>
+          </form>
+
+          <div class="entity-workspace">
+            <div class="entity-command-bar">
+              <div>
+                <h2>Prestadores</h2>
+                <span>Cadastro de colaboradores PJ e contratos</span>
+              </div>
+              <div class="list-actions">
+                <input id="searchPrestador" class="search" placeholder="Pesquisar prestador" />
+                <button type="button" id="newPrestador" class="primary">Novo</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table id="prestadoresTable"></table>
+            </div>
+          </div>
+          <div id="prestadorBackdrop" class="modal-backdrop" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      <section id="adiantamentos" class="view">
+        <div class="panel adiantamentos-panel">
+          <form id="adiantamentoForm" class="form-grid compact form-modal" aria-hidden="true">
+            <div class="panel-head wide">
+              <h2>Novo adiantamento</h2>
+              <button type="button" id="closeAdiantamentoModal" class="icon-button" aria-label="Fechar">&times;</button>
+            </div>
+            <div class="wide prestador-picker" data-prestador-picker="adiantamento">
+              <label>Prestador
+                <input data-prestador-search="adiantamento" type="search" placeholder="Busque por nome, razão social, CPF ou CNPJ" autocomplete="off" />
+              </label>
+              <input name="prestador_id" type="hidden" />
+              <div class="prestador-picker-list" data-prestador-results="adiantamento"></div>
+            </div>
+            <label>Data<input name="data_adiantamento" type="date" required /></label>
+            <label>Valor total<input name="valor_total" type="number" step="0.01" required /></label>
+            <label>Parcelas<input name="parcelas" type="number" min="1" value="1" required /></label>
+            <label>Primeiro desconto<input name="competencia_inicial" type="month" required /></label>
+            <label class="wide">Observacao<input name="observacao" /></label>
+            <div class="actions wide">
+              <button type="submit" class="primary">Lancar adiantamento</button>
+            </div>
+          </form>
+
+          <div class="entity-workspace">
+            <div class="entity-command-bar">
+              <div>
+                <h2>Adiantamentos</h2>
+                <span>Controle de lançamentos, parcelas e saldo aberto</span>
+              </div>
+              <div class="list-actions">
+                <div class="segmented-filter" aria-label="Filtro de adiantamentos">
+                  <button type="button" class="active" data-adiantamento-filter="todos">Todos</button>
+                  <button type="button" data-adiantamento-filter="saldo">Com saldo</button>
+                  <button type="button" data-adiantamento-filter="quitados">Quitados</button>
+                </div>
+                <button type="button" id="newAdiantamento" class="primary">Novo</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table id="adiantamentosTable"></table>
+            </div>
+          </div>
+          <div id="adiantamentoBackdrop" class="modal-backdrop" aria-hidden="true"></div>
+        </div>
+        <div class="panel extrato-panel">
+          <div class="panel-head entity-subhead">
+            <h2>Extrato do parcelamento</h2>
+            <span id="extratoTitulo">Selecione um adiantamento</span>
+          </div>
+          <div class="table-wrap compact-table">
+            <table id="extratoTable"></table>
+          </div>
+        </div>
+      </section>
+
+      <section id="rescisoes" class="view">
+        <div class="rescisao-workspace">
+          <form id="rescisaoForm" class="panel form-grid compact">
+            <div class="panel-head wide">
+              <h2>Rescisão de contrato PJ</h2>
+            </div>
+            <div class="wide prestador-picker" data-prestador-picker="rescisao">
+              <label>Prestador
+                <input data-prestador-search="rescisao" type="search" placeholder="Busque por nome, razão social, CPF ou CNPJ" autocomplete="off" />
+              </label>
+              <input name="prestador_id" type="hidden" />
+              <div class="prestador-picker-list" data-prestador-results="rescisao"></div>
+            </div>
+            <label>Data da rescisão<input name="data_rescisao" type="date" required /></label>
+            <label>Descontos manuais<input name="descontos_manual" type="number" step="0.01" value="0" /></label>
+            <label class="wide">Motivo<input name="motivo" /></label>
+            <div class="actions wide">
+              <button type="button" id="calcularRescisao">Calcular</button>
+              <button type="submit" class="primary">Iniciar rescisão</button>
+            </div>
+          </form>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Cálculo automático</h2>
+            </div>
+            <div id="rescisaoPreview" class="rescisao-preview">Informe prestador e data para calcular.</div>
+          </div>
+        </div>
+
+        <div class="panel rescisoes-panel">
+          <div class="entity-command-bar">
+            <div>
+              <h2>Rescisões registradas</h2>
+              <span>Fluxo de NF, aprovação, finalização e Omie</span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="rescisoesTable"></table>
+          </div>
+        </div>
+      </section>
+
+      <section id="folha" class="view">
+        <div class="panel folha-workspace">
+          <form id="folhaForm" class="payroll-bar folha-command-bar">
+            <input name="competencia" type="hidden" required />
+            <div class="folha-context">
+              <div class="system-days">
+                <span>Competência</span>
+                <strong id="competenciaAtual">-</strong>
+              </div>
+              <div class="system-days">
+                <span>Dias</span>
+                <strong id="diasMesAuto">0</strong>
+              </div>
+              <div class="system-days">
+                <span>Status</span>
+                <strong id="folhaStatus">Aberto</strong>
+              </div>
+            </div>
+            <div class="folha-actions">
+              <button type="button" id="aprovarFolha">Aprovar folha</button>
+              <button type="button" id="solicitarNfs">Solicitar NFs</button>
+              <button type="button" id="enviarAprovacaoFolha">Enviar aprovação</button>
+              <button type="button" id="folhaReport">Relatório</button>
+              <button type="button" id="integrarOmie">Integrar Omie</button>
+              <button type="button" id="reabrirFolha">Reabrir folha</button>
+            </div>
+          </form>
+          <div class="panel-head folha-preview-head">
+            <h2>Previa do fechamento</h2>
+            <span id="folhaHint">Informe a competencia para calcular todos os prestadores ativos.</span>
+            <p id="approvalStatus" class="config-status"></p>
+          </div>
+          <div class="filter-bar folha-filter-bar">
+            <label>Buscar pagamento<input id="folhaSearch" type="search" placeholder="Prestador, razão social, CNPJ, NF..." /></label>
+            <label>Status NF
+              <select id="folhaNfFilter">
+                <option value="">Todos</option>
+                <option value="pendente">Pendente</option>
+                <option value="validada">Validada</option>
+                <option value="divergente">Divergente</option>
+              </select>
+            </label>
+            <label>Status Omie
+              <select id="folhaOmieFilter">
+                <option value="">Todos</option>
+                <option value="pendente">Pendente</option>
+                <option value="integrado">Integrado</option>
+                <option value="erro">Erro</option>
+              </select>
+            </label>
+            <label>Diferença NF
+              <select id="folhaDiffFilter">
+                <option value="">Todos</option>
+                <option value="com_diferenca">Com diferença</option>
+                <option value="sem_diferenca">Sem diferença</option>
+              </select>
+            </label>
+          </div>
+          <div id="folhaTotals" class="totals-bar"></div>
+          <div class="table-wrap">
+            <table id="folhaPreview"></table>
+          </div>
+          <div class="folha-footer-actions">
+            <button type="submit" form="folhaForm" class="primary">Fechar folha</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="configuracoes" class="view">
+        <div class="panel config-shell">
+          <div class="panel-head">
+            <h2>Configurações</h2>
+            <span>Escolha uma área para editar</span>
+          </div>
+          <div id="configHub" class="config-hub"></div>
+        </div>
+        <div id="usuarioPanel" class="panel config-panel">
+          <div class="panel-head">
+            <h2>Usuários e permissões</h2>
+            <button type="button" class="icon-button" data-close-config-modal aria-label="Fechar">&times;</button>
+          </div>
+          <div class="usuario-config-layout">
+            <div class="usuario-list">
+              <div class="entity-subhead">
+                <h3>Usuários cadastrados</h3>
+                <span>Selecione um usuário para editar</span>
+              </div>
+              <div class="table-wrap compact-table">
+                <table id="usuariosTable"></table>
+              </div>
+            </div>
+            <form id="usuarioForm" class="form-grid usuario-form">
+              <input type="hidden" name="id" />
+              <label>Nome<input name="nome" required /></label>
+              <label>E-mail<input name="email" required /></label>
+              <label>Perfil
+                <select name="perfil" required>
+                  <option value="master">Master</option>
+                  <option value="administrador">Administrador</option>
+                  <option value="financeiro">Financeiro</option>
+                  <option value="operacional">Operacional</option>
+                  <option value="aprovador">Aprovador</option>
+                  <option value="consulta">Consulta</option>
+                </select>
+              </label>
+              <label>Senha<input name="senha" type="password" placeholder="Preencher para criar ou alterar" /></label>
+              <label class="check"><input name="ativo" type="checkbox" checked /> Ativo</label>
+              <fieldset class="permissions-fieldset wide">
+                <legend>Permissões do usuário</legend>
+                <div id="usuarioPermissoes" class="permission-grid"></div>
+              </fieldset>
+              <div class="actions wide">
+                <button type="button" id="clearUsuario">Novo usuário</button>
+                <button type="submit" class="primary">Salvar usuário</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div id="smtpPanel" class="panel config-panel">
+          <div class="panel-head">
+            <h2>Configuração de e-mail</h2>
+            <button type="button" class="icon-button" data-close-config-modal aria-label="Fechar">&times;</button>
+          </div>
+          <form id="smtpForm" class="form-grid">
+            <label>E-mail destino das NFs<input name="nfDestinationEmail" value="paulo.mendonca@redefrete.com.br" /></label>
+            <label>E-mail para teste<input name="testEmail" placeholder="paulo.mendonca@redefrete.com.br" /></label>
+            <label>Graph Tenant ID<input name="graphTenantId" placeholder="Directory (tenant) ID" /></label>
+            <label>Graph Client ID<input name="graphClientId" placeholder="Application (client) ID" /></label>
+            <label>Graph Client Secret<input name="graphClientSecret" type="password" placeholder="Manter secret atual" /></label>
+            <label>Graph Remetente<input name="graphFrom" placeholder="nf.gestao@redefrete.com.br" /></label>
+            <div class="actions wide">
+              <button type="button" id="testSmtp">Testar e-mail</button>
+              <button type="submit" class="primary">Salvar e-mail</button>
+            </div>
+          </form>
+          <p id="smtpStatus" class="config-status"></p>
+        </div>
+        <div id="emailTemplatesPanel" class="panel config-panel">
+          <div class="panel-head">
+            <h2>Textos dos e-mails</h2>
+            <button type="button" class="icon-button" data-close-config-modal aria-label="Fechar">&times;</button>
+          </div>
+          <div class="email-template-layout">
+            <aside id="emailTemplateNav" class="aux-nav"></aside>
+            <form id="emailTemplateForm" class="email-template-form">
+              <input type="hidden" name="tipo" />
+              <label>Assunto<input name="assunto" required /></label>
+              <label>Corpo do e-mail<textarea name="corpo" rows="13" required></textarea></label>
+              <div>
+                <strong>Variáveis disponíveis</strong>
+                <p id="emailTemplateVars" class="template-vars"></p>
+              </div>
+              <div class="actions">
+                <button type="submit" class="primary">Salvar texto</button>
+              </div>
+              <p id="emailTemplateStatus" class="config-status"></p>
+            </form>
+          </div>
+        </div>
+        <div id="omiePanel" class="panel config-panel">
+          <div class="panel-head">
+            <h2>Configuração Omie</h2>
+            <button type="button" class="icon-button" data-close-config-modal aria-label="Fechar">&times;</button>
+          </div>
+          <form id="omieForm" class="form-grid">
+            <label>App Key<input name="appKey" placeholder="App Key da Omie" /></label>
+            <label>App Secret<input name="appSecret" type="password" placeholder="Manter secret atual" /></label>
+            <label>Dia de vencimento<input name="dueDay" type="number" min="1" max="28" value="5" /></label>
+            <label>ID conta corrente<input name="contaCorrenteId" placeholder="Opcional: codigo interno da conta Omie" /></label>
+            <label>Banco<input name="banco" value="341" /></label>
+            <label>Agência<input name="agencia" value="1268" /></label>
+            <label>Conta<input name="conta" value="33981-7" /></label>
+            <label class="wide">Feriados<input name="holidays" placeholder="2026-01-01,2026-04-03" /></label>
+            <div class="actions wide">
+              <button type="button" id="testOmie">Testar Omie</button>
+              <button type="submit" class="primary">Salvar Omie</button>
+            </div>
+          </form>
+          <p id="omieStatus" class="config-status"></p>
+        </div>
+        <div id="cadastrosPanel" class="panel config-panel">
+          <div class="panel-head">
+            <h2>Cadastros auxiliares</h2>
+            <button type="button" class="icon-button" data-close-config-modal aria-label="Fechar">&times;</button>
+          </div>
+          <div id="cadastrosConfig" class="cadastros-config"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="compositionModal" class="panel composition-modal" aria-hidden="true">
+      <div class="panel-head">
+        <h2 id="compositionTitle">Composição do pagamento</h2>
+        <button type="button" id="closeCompositionModal" class="icon-button" aria-label="Fechar">&times;</button>
+      </div>
+      <div id="compositionBody" class="composition-body"></div>
+    </div>
+    <div id="compositionBackdrop" class="modal-backdrop" aria-hidden="true"></div>
+    <div id="configBackdrop" class="modal-backdrop"></div>
+    <div id="toast" role="status"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
+

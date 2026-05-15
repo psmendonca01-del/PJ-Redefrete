@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Fluxograma do Sistema PJ Redefrete</title>
+    <style>
+      :root {
+        --ink: #111827;
+        --muted: #5f6b7a;
+        --line: #d7dce3;
+        --blue: #002a5c;
+        --red: #dc2626;
+        --soft: #f6f8fb;
+        --ok: #107c10;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #eef2f7;
+        color: var(--ink);
+        font-family: Arial, Helvetica, sans-serif;
+      }
+
+      .page {
+        width: 1600px;
+        min-height: 1120px;
+        margin: 0 auto;
+        padding: 28px;
+        background: #fff;
+      }
+
+      .header {
+        display: grid;
+        grid-template-columns: 250px 1fr 260px;
+        gap: 22px;
+        align-items: center;
+        padding: 22px 26px;
+        background: #171b22;
+        color: #fff;
+      }
+
+      .logo {
+        width: 210px;
+      }
+
+      .header small {
+        display: block;
+        color: #cbd5e1;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: .08em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 6px 0 0;
+        font-size: 34px;
+      }
+
+      .meta {
+        text-align: right;
+        line-height: 1.45;
+      }
+
+      .legend {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 10px;
+        margin: 18px 0;
+      }
+
+      .legend span {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 10px;
+        border: 1px solid var(--line);
+        background: var(--soft);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--blue);
+      }
+
+      .dot.red { background: var(--red); }
+      .dot.ok { background: var(--ok); }
+      .dot.gray { background: #64748b; }
+      .dot.gold { background: #b7791f; }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 14px;
+      }
+
+      .lane {
+        min-height: 850px;
+        border: 1px solid var(--line);
+        background: #fff;
+      }
+
+      .lane h2 {
+        margin: 0;
+        padding: 12px 14px;
+        background: var(--blue);
+        color: #fff;
+        font-size: 18px;
+      }
+
+      .lane-content {
+        display: grid;
+        gap: 10px;
+        padding: 12px;
+      }
+
+      .node {
+        position: relative;
+        padding: 12px 12px 12px 14px;
+        border: 1px solid var(--line);
+        border-left: 5px solid var(--blue);
+        background: var(--soft);
+        min-height: 66px;
+      }
+
+      .node strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 15px;
+      }
+
+      .node span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .node.red { border-left-color: var(--red); }
+      .node.ok { border-left-color: var(--ok); }
+      .node.gray { border-left-color: #64748b; }
+      .node.gold { border-left-color: #b7791f; }
+
+      .arrow {
+        display: grid;
+        place-items: center;
+        height: 18px;
+        color: #64748b;
+        font-size: 18px;
+        font-weight: 900;
+      }
+
+      .decision {
+        border-left-color: #b7791f;
+        background: #fffaf0;
+      }
+
+      .note {
+        margin-top: 18px;
+        padding: 14px 16px;
+        border: 1px solid var(--line);
+        background: #f8fafc;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      @page {
+        size: A3 landscape;
+        margin: 8mm;
+      }
+
+      @media print {
+        body {
+          background: #fff;
+        }
+
+        .page {
+          width: auto;
+          min-height: auto;
+          padding: 0;
+        }
+
+        .header,
+        .lane h2 {
+          print-color-adjust: exact;
+          -webkit-print-color-adjust: exact;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <img class="logo" src="../public/assets/logo-redefrete-branco.png" alt="Redefrete" />
+        <div>
+          <small>Fluxograma operacional</small>
+          <h1>Sistema de Pagamentos PJ</h1>
+        </div>
+        <div class="meta">
+          <small>Redefrete</small>
+          <strong>Folha, NF, aprovação, rescisão e Omie</strong>
+        </div>
+      </header>
+
+      <section class="legend">
+        <span><i class="dot"></i>Cadastro / operação</span>
+        <span><i class="dot gold"></i>Validação / decisão</span>
+        <span><i class="dot red"></i>Pendência / divergência</span>
+        <span><i class="dot ok"></i>Conclusão / integração</span>
+        <span><i class="dot gray"></i>Controle de acesso</span>
+      </section>
+
+      <section class="flow">
+        <article class="lane">
+          <h2>1. Acesso e cadastros</h2>
+          <div class="lane-content">
+            <div class="node gray"><strong>Login</strong><span>Usuário entra no sistema com e-mail, senha e perfil.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node gray"><strong>Permissões</strong><span>Master/Admin, Financeiro, Operacional, Aprovador ou Consulta.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Prestadores PJ</strong><span>Dados pessoais, razão social, contato, contrato, cargo e status.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Validações</strong><span>CPF, CNPJ, unidade, projeto, departamento, função e categoria.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Dados bancários</strong><span>Banco, agência, conta e dados necessários para conferência.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Cadastros auxiliares</strong><span>Categorias, departamentos, funções, projetos e unidades.</span></div>
+          </div>
+        </article>
+
+        <article class="lane">
+          <h2>2. Adiantamentos</h2>
+          <div class="lane-content">
+            <div class="node"><strong>Lançamento</strong><span>Operador registra data, valor total e prestador.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Parcelamento</strong><span>Define quantidade de parcelas e primeira competência de desconto.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node gold"><strong>Regras de período</strong><span>Não permite datas anteriores a períodos liberados ou fechados.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Extrato</strong><span>Mostra parcelas, competências, saldo em aberto e parcelas quitadas.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node ok"><strong>Desconto automático</strong><span>Parcelas em aberto são descontadas no fechamento da folha.</span></div>
+          </div>
+        </article>
+
+        <article class="lane">
+          <h2>3. Folha mensal PJ</h2>
+          <div class="lane-content">
+            <div class="node"><strong>Folha aberta</strong><span>Competência do mês aparece no painel e pode ser acessada pela folha.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Cálculo automático</strong><span>Salário / 30 x dias trabalhados. Considera admissões e regras de mês.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Ajustes</strong><span>Adições, bônus, descontos manuais e adiantamentos.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Composição</strong><span>Pop-up mostra memória de cálculo, NF, descontos e aprovações.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node gold"><strong>NF obrigatória</strong><span>A folha só segue para fechamento após todas as NFs validadas.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Solicitação de NF</strong><span>Sistema envia e-mail ao prestador com valor previsto e prazo.</span></div>
+          </div>
+        </article>
+
+        <article class="lane">
+          <h2>4. Aprovação e fechamento</h2>
+          <div class="lane-content">
+            <div class="node"><strong>Enviar aprovação</strong><span>Operador envia a folha ou rescisão aos aprovadores.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node gold"><strong>Aprovações</strong><span>Aprovadores obrigatórios validam. Administrador pode aprovar, mas não é obrigatório.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node ok"><strong>Autenticação</strong><span>Cada aprovação gera código de autenticação para relatórios.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node ok"><strong>Fechar folha</strong><span>Após aprovação, a folha é bloqueada para alteração.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Relatórios</strong><span>Relatório de folha e relatório unificado da rescisão.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node ok"><strong>Omie</strong><span>Financeiro/Admin integra contas a pagar após fechamento/finalização.</span></div>
+          </div>
+        </article>
+
+        <article class="lane">
+          <h2>5. Rescisão PJ</h2>
+          <div class="lane-content">
+            <div class="node"><strong>Iniciar rescisão</strong><span>Seleciona prestador, data da rescisão e motivo.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>Cálculo da rescisão</strong><span>Valor proporcional, adiantamentos em aberto e descontos manuais.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node"><strong>NF de rescisão</strong><span>Solicitação, upload, leitura e validação da NF.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node gold"><strong>Aprovação</strong><span>Após NF validada, rescisão segue para aprovadores.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node ok"><strong>Finalização</strong><span>Prestador fica inativo e rescisão fica pronta para integração.</span></div>
+            <div class="arrow">↓</div>
+            <div class="node ok"><strong>Omie rescisão</strong><span>Vencimento em 10 dias corridos a partir da data de rescisão.</span></div>
+          </div>
+        </article>
+      </section>
+
+      <p class="note">
+        Observação: a integração Omie utiliza fornecedor, categoria, conta corrente, vencimento, número da NF e observações com projeto,
+        departamento e dados bancários. O upload da NF permanece no sistema até haver endpoint/documentação específica de anexos da Omie.
+      </p>
+    </main>
+  </body>
+</html>
