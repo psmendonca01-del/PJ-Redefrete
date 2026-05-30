@@ -3046,6 +3046,23 @@ app.get("/email-action/reembolso", asyncRoute(async (req, res) => {
   }
   const user = await findUsuarioForLogin(payload.email);
   if (!user || !user.ativo) return res.status(403).send("Aprovador nao localizado ou inativo.");
+  if (payload.dryRun) {
+    const actionLabel = payload.action === "aprovar" ? "Aprovacao simulada" : "Reprovacao simulada";
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.send(`<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(actionLabel)}</title></head>
+<body style="margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f3f6fb;color:#0b1726">
+  <main style="max-width:560px;margin:48px auto;background:#fff;border:1px solid #d7dde6;border-radius:10px;padding:28px">
+    <h1 style="margin:0 0 10px">${escapeHtml(actionLabel)}</h1>
+    <p>Este link esta em modo teste. Nenhuma informacao foi alterada no sistema.</p>
+    <p><strong>Processo:</strong> ${escapeHtml(String(payload.id))}</p>
+    <p><strong>Aprovador:</strong> ${escapeHtml(user.nome || user.email)}</p>
+    <p style="color:#667085">Se esta tela apareceu corretamente, o fluxo de botao por e-mail esta funcionando.</p>
+  </main>
+</body>
+</html>`);
+  }
   let result;
   if (payload.action === "aprovar") {
     result = await aprovarPrestacaoReembolso(payload.id, user, "Aprovado pelo e-mail.");
