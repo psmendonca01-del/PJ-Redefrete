@@ -1698,23 +1698,17 @@ async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails, pr
       const safeLink = publicUrl(link);
       const demonstrativo = prestacaoId ? await reembolsoPrestacaoEmailDemonstrativo(prestacaoId, aprovador.email) : "";
       const approveLink = prestacaoId ? emailActionUrl({ kind: "reembolso_prestacao", action: "aprovar", id: Number(prestacaoId), email: aprovador.email }) : "";
-      const rejectLinks = prestacaoId ? [
-        ["Comprovante divergente", "Comprovante divergente"],
-        ["Valor divergente", "Valor divergente"],
-        ["Despesa fora da política", "Despesa fora da politica"]
-      ].map(([label, reason]) => {
-        const url = emailActionUrl({ kind: "reembolso_prestacao", action: "reprovar", id: Number(prestacaoId), email: aprovador.email, reason });
-        return `<a href="${escapeHtml(url)}" style="display:inline-block;margin:0 8px 8px 0;background:#fff4f4;color:#991b1b;border:1px solid #f3b4b4;text-decoration:none;padding:10px 12px;border-radius:4px;font-weight:700">${escapeHtml(label)}</a>`;
-      }).join("") : "";
+      const rejectLink = prestacaoId ? emailActionUrl({ kind: "reembolso_prestacao", action: "reprovar", id: Number(prestacaoId), email: aprovador.email, reason: "Solicitado ajuste pelo aprovador." }) : "";
       const html = `
         <p>Ola, ${escapeHtml(aprovador.nome)}.</p>
         <p>${escapeHtml(detalhe)}</p>
         ${prestacaoId ? `
-          <div style="margin:16px 0">
-            <a href="${escapeHtml(approveLink)}" style="display:inline-block;margin:0 8px 8px 0;background:#057a55;color:#fff;text-decoration:none;padding:12px 16px;border-radius:4px;font-weight:800">Aprovar</a>
-            ${rejectLinks}
+          <div style="margin:18px 0 12px;padding:14px 16px;border:1px solid #d7dde6;border-radius:6px;background:#ffffff">
+            <div style="font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#667085;font-weight:800;margin-bottom:10px">Ação necessária</div>
+            <a href="${escapeHtml(approveLink)}" style="display:inline-block;margin:0 10px 8px 0;background:#002b5f;color:#fff;text-decoration:none;padding:9px 13px;border-radius:4px;font-weight:700;font-size:13px">Revisar e aprovar</a>
+            <a href="${escapeHtml(rejectLink)}" style="display:inline-block;margin:0 0 8px 0;background:#fff;color:#344054;border:1px solid #cfd6df;text-decoration:none;padding:8px 12px;border-radius:4px;font-weight:700;font-size:13px">Solicitar ajuste</a>
           </div>
-          <p style="font-size:12px;color:#667085;margin-top:-6px">Ao clicar, o sistema registra sua decisão e gera a autenticação da aprovação ou recusa.</p>
+          <p style="font-size:12px;color:#667085;margin-top:0">A decisão será registrada no sistema com número de autenticação.</p>
         ` : ""}
         <div style="margin:16px 0;padding:14px;border:1px solid #d7dde6;border-radius:6px;background:#f8fafc">
           <strong style="display:block;margin-bottom:10px;color:#0b1726">Resumo para aprovacao</strong>
