@@ -1290,6 +1290,52 @@ function publicUrl(url) {
     .replace(/^https?:\/\/\[::1\](?::\d+)?/i, (match) => match.replace(/\[::1\]/i, host));
 }
 
+function reembolsoPublicBaseUrl() {
+  const configured = String(process.env.REEMBOLSO_APP_URL || process.env.APP_REEMBOLSO_URL || "");
+  const configuredIsLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(configured);
+  return String(configured && !configuredIsLocalhost ? configured : `http://${localNetworkHost()}:${port}`).replace(/\/$/, "");
+}
+
+function emailActionSecret() {
+  return String(process.env.EMAIL_ACTION_SECRET || process.env.SESSION_SECRET || process.env.GRAPH_CLIENT_SECRET || process.env.DB_PASSWORD || "redefrete-email-action");
+}
+
+function emailActionToken(payload) {
+  const body = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", emailActionSecret()).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+
+function verifyEmailActionToken(token) {
+  const [body, signature] = String(token || "").split(".");
+  if (!body || !signature) return null;
+  const expected = crypto.createHmac("sha256", emailActionSecret()).update(body).digest("base64url");
+  if (Buffer.byteLength(signature) !== Buffer.byteLength(expected)) return null;
+  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  if (payload.exp && Number(payload.exp) < Date.now()) return null;
+  return payload;
+}
+
+function emailActionUrl(payload) {
+  const token = emailActionToken({
+    ...payload,
+    exp: payload.exp || Date.now() + (1000 * 60 * 60 * 24 * 7)
+  });
+  return `${reembolsoPublicBaseUrl()}/email-action/reembolso?token=${encodeURIComponent(token)}`;
+}
+
+function comprovanteEmailUrl({ comprovanteId, prestacaoId, email }) {
+  const token = emailActionToken({
+    kind: "reembolso_comprovante",
+    comprovanteId,
+    prestacaoId,
+    email,
+    exp: Date.now() + (1000 * 60 * 60 * 24 * 7)
+  });
+  return `${reembolsoPublicBaseUrl()}/email-action/comprovante?token=${encodeURIComponent(token)}`;
+}
+
 function parseDateOnly(value) {
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) return null;
@@ -1631,11 +1677,11 @@ async function sendGraphMail({ to, subject, html }) {
   return { sent: true, to: recipients };
 }
 
-async function sendReembolsoApprovalEmails({ titulo, detalhe, link, emails }) {
-  return sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails: emails || REEMBOLSO_APPROVAL_FLOW.map((item) => item.email) });
+async function sendReembolsoApprovalEmails({ titulo, detalhe, link, emails, prestacaoId }) {
+  return sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails: emails || REEMBOLSO_APPROVAL_FLOW.map((item) => item.email), prestacaoId });
 }
 
-async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails }) {
+async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails, prestacaoId }) {
   const normalizedEmails = (emails || []).map((email) => String(email || "").toLowerCase()).filter(Boolean);
   if (!normalizedEmails.length) return [];
   const aprovadores = await query(
@@ -1650,9 +1696,26 @@ async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails }) 
   for (const aprovador of aprovadores) {
     try {
       const safeLink = publicUrl(link);
+      const demonstrativo = prestacaoId ? await reembolsoPrestacaoEmailDemonstrativo(prestacaoId, aprovador.email) : "";
+      const approveLink = prestacaoId ? emailActionUrl({ kind: "reembolso_prestacao", action: "aprovar", id: Number(prestacaoId), email: aprovador.email }) : "";
+      const rejectLinks = prestacaoId ? [
+        ["Comprovante divergente", "Comprovante divergente"],
+        ["Valor divergente", "Valor divergente"],
+        ["Despesa fora da política", "Despesa fora da politica"]
+      ].map(([label, reason]) => {
+        const url = emailActionUrl({ kind: "reembolso_prestacao", action: "reprovar", id: Number(prestacaoId), email: aprovador.email, reason });
+        return `<a href="${escapeHtml(url)}" style="display:inline-block;margin:0 8px 8px 0;background:#fff4f4;color:#991b1b;border:1px solid #f3b4b4;text-decoration:none;padding:10px 12px;border-radius:4px;font-weight:700">${escapeHtml(label)}</a>`;
+      }).join("") : "";
       const html = `
         <p>Ola, ${escapeHtml(aprovador.nome)}.</p>
         <p>${escapeHtml(detalhe)}</p>
+        ${prestacaoId ? `
+          <div style="margin:16px 0">
+            <a href="${escapeHtml(approveLink)}" style="display:inline-block;margin:0 8px 8px 0;background:#057a55;color:#fff;text-decoration:none;padding:12px 16px;border-radius:4px;font-weight:800">Aprovar</a>
+            ${rejectLinks}
+          </div>
+          <p style="font-size:12px;color:#667085;margin-top:-6px">Ao clicar, o sistema registra sua decisão e gera a autenticação da aprovação ou recusa.</p>
+        ` : ""}
         <div style="margin:16px 0;padding:14px;border:1px solid #d7dde6;border-radius:6px;background:#f8fafc">
           <strong style="display:block;margin-bottom:10px;color:#0b1726">Resumo para aprovacao</strong>
           <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">
@@ -1661,6 +1724,7 @@ async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails }) 
             <tr><td style="width:110px;padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Link</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(safeLink)}</td></tr>
           </table>
         </div>
+        ${demonstrativo}
         <p><a href="${escapeHtml(safeLink)}" style="display:inline-block;background:#002b5f;color:#fff;text-decoration:none;padding:10px 14px;border-radius:4px;font-weight:700">${escapeHtml(titulo)}</a></p>
       `;
       results.push(await sendGraphMail({ to: aprovador.email, subject: titulo, html }));
@@ -2339,6 +2403,103 @@ async function nextReembolsoApprovalStep(prestacaoId) {
   return REEMBOLSO_APPROVAL_FLOW.find((item) => !approvedEtapas.has(item.etapa)) || null;
 }
 
+async function aprovarPrestacaoReembolso(prestacaoId, user, justificativa = null) {
+  const prestacao = await getPrestacao(prestacaoId);
+  if (!prestacao) {
+    const error = new Error("Prestacao nao encontrada.");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (prestacao.status !== "enviada_superior") {
+    const error = new Error("Prestacao nao esta aguardando aprovacao.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const expectedStep = await nextReembolsoApprovalStep(prestacaoId);
+  if (!expectedStep) {
+    const error = new Error("Fluxo de aprovacao ja concluido.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const userStep = reembolsoApprovalStepForUser(user);
+  if (!userStep || userStep.etapa !== expectedStep.etapa) {
+    const error = new Error(`Esta etapa esta aguardando ${expectedStep.nome}.`);
+    error.statusCode = 403;
+    throw error;
+  }
+  const existing = await query(
+    "SELECT id FROM rd_reembolso_aprovacoes WHERE prestacao_id = ? AND usuario_id = ? AND decisao = 'aprovado' LIMIT 1",
+    [prestacaoId, user.id]
+  );
+  if (existing.length) {
+    const error = new Error("Este aprovador ja aprovou esta prestacao.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const codigo = authCode("APR");
+  const aprovadoEm = nowSql();
+  await execute(
+    "INSERT INTO rd_reembolso_aprovacoes (prestacao_id, usuario_id, etapa, decisao, justificativa, autenticacao, created_at) VALUES (?, ?, ?, 'aprovado', ?, ?, ?)",
+    [prestacaoId, user.id, expectedStep.etapa, justificativa || null, codigo, aprovadoEm]
+  );
+  const nextStep = await nextReembolsoApprovalStep(prestacaoId);
+  let dataPagamento = null;
+  if (nextStep) {
+    await execute("UPDATE rd_reembolso_prestacoes SET updated_at = ? WHERE id = ?", [aprovadoEm, prestacaoId]);
+    const detalhe = await reembolsoPrestacaoEmailResumo(prestacaoId, "Uma prestacao de contas de reembolso avancou para sua etapa de aprovacao.");
+    await sendReembolsoApprovalEmailsTo({
+      titulo: `Prestação ${prestacao.numero || prestacaoId} aguardando aprovação`,
+      detalhe,
+      link: `${approvalCentralUrl()}?tipo=reembolso_superior&id=${encodeURIComponent(prestacaoId)}`,
+      emails: [nextStep.email],
+      prestacaoId
+    });
+  } else {
+    try {
+      dataPagamento = calcularDataPagamentoReembolso(prestacao.created_at, aprovadoEm) || fallbackDataPagamentoReembolso();
+    } catch {
+      dataPagamento = fallbackDataPagamentoReembolso();
+    }
+    await execute(
+      "UPDATE rd_reembolso_prestacoes SET status = 'em_validacao_financeira', aprovado_superior_em = ?, data_pagamento_prevista = ?, updated_at = ? WHERE id = ?",
+      [aprovadoEm, dataPagamento, aprovadoEm, prestacaoId]
+    );
+  }
+  await addHistory(prestacaoId, user.id, "aprovou_superior", `${expectedStep.nome} aprovou a prestacao.`);
+  return { ok: true, autenticacao: codigo, data_pagamento_prevista: dataPagamento, proxima_etapa: nextStep?.nome || "Financeiro" };
+}
+
+async function reprovarPrestacaoReembolso(prestacaoId, user, justificativa = null) {
+  const prestacao = await getPrestacao(prestacaoId);
+  if (!prestacao) {
+    const error = new Error("Prestacao nao encontrada.");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (prestacao.status !== "enviada_superior") {
+    const error = new Error("Prestacao nao esta aguardando aprovacao.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const expectedStep = await nextReembolsoApprovalStep(prestacaoId);
+  const userStep = reembolsoApprovalStepForUser(user);
+  if (!expectedStep || !userStep || userStep.etapa !== expectedStep.etapa) {
+    const error = new Error(`Esta etapa esta aguardando ${expectedStep?.nome || "outro aprovador"}.`);
+    error.statusCode = 403;
+    throw error;
+  }
+  const codigo = authCode("REP");
+  const motivo = justificativa || "Reprovado pelo e-mail.";
+  const stamp = nowSql();
+  await execute("UPDATE rd_reembolso_prestacoes SET status = 'reprovada_superior', motivo_reprovacao = ?, updated_at = ? WHERE id = ?", [motivo, stamp, prestacaoId]);
+  await execute(
+    "INSERT INTO rd_reembolso_aprovacoes (prestacao_id, usuario_id, etapa, decisao, justificativa, autenticacao, created_at) VALUES (?, ?, ?, 'reprovado', ?, ?, ?)",
+    [prestacaoId, user.id, expectedStep.etapa, motivo, codigo, stamp]
+  );
+  await addHistory(prestacaoId, user.id, "reprovou_superior", motivo);
+  return { ok: true, autenticacao: codigo };
+}
+
 async function createSession(usuarioId) {
   const token = crypto.randomBytes(32).toString("hex");
   const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
@@ -2503,6 +2664,99 @@ async function reembolsoPrestacaoEmailResumo(id, fallback = "") {
     `A reembolsar: ${formatMoney(row.valor_reembolsar)}`,
     `A devolver: ${formatMoney(row.saldo_devolver)}`
   ].join(" | ");
+}
+
+async function reembolsoPrestacaoEmailDemonstrativo(id, aprovadorEmail) {
+  const rows = await query(
+    `SELECT p.*, u.nome AS solicitante, u.email,
+            c.nome AS centro_custo,
+            COALESCE(pr.razao_social, u.nome) AS razao_social,
+            COALESCE(pr.cnpj, pr.cpf, '') AS documento
+       FROM rd_reembolso_prestacoes p
+       JOIN usuarios u ON u.id = p.solicitante_id
+       LEFT JOIN departamentos c ON c.id = p.centro_custo_id
+       ${prestadorJoinByUserSql("u", "pr")}
+      WHERE p.id = ?
+      LIMIT 1`,
+    [id]
+  );
+  const prestacao = rows[0];
+  if (!prestacao) return "";
+  const despesas = await query(
+    `SELECT d.id, d.data_despesa, d.descricao, d.valor, d.quantidade_km, d.origem, d.destino,
+            t.nome AS tipo
+       FROM rd_reembolso_despesas d
+       LEFT JOIN rd_reembolso_tipos_despesa t ON t.id = d.tipo_despesa_id
+      WHERE d.prestacao_id = ?
+      ORDER BY d.data_despesa, d.id`,
+    [id]
+  );
+  const comprovantes = await query(
+    `SELECT c.id, c.despesa_id, c.nome_original
+       FROM rd_reembolso_comprovantes c
+       JOIN rd_reembolso_despesas d ON d.id = c.despesa_id
+      WHERE d.prestacao_id = ?
+      ORDER BY c.id`,
+    [id]
+  );
+  const comprovantesPorDespesa = new Map();
+  for (const comprovante of comprovantes) {
+    const key = Number(comprovante.despesa_id);
+    if (!comprovantesPorDespesa.has(key)) comprovantesPorDespesa.set(key, []);
+    comprovantesPorDespesa.get(key).push(comprovante);
+  }
+  const despesaRows = despesas.map((despesa) => {
+    const anexos = (comprovantesPorDespesa.get(Number(despesa.id)) || [])
+      .map((comprovante, index) => {
+        const url = comprovanteEmailUrl({ comprovanteId: comprovante.id, prestacaoId: id, email: aprovadorEmail });
+        return `<a href="${escapeHtml(url)}" style="color:#002b5f;font-weight:700;text-decoration:none">Comprovante ${index + 1}</a>`;
+      }).join(" &nbsp; ");
+    const rota = [despesa.origem, despesa.destino].filter(Boolean).join(" -> ");
+    return `
+      <tr>
+        <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(formatDate(despesa.data_despesa))}</td>
+        <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(despesa.tipo || "-")}</td>
+        <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(despesa.descricao || rota || "-")}</td>
+        <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;font-weight:700">${escapeHtml(formatMoney(despesa.valor))}</td>
+        <td style="padding:8px;border-top:1px solid #e5e7eb">${anexos || "Sem anexo"}</td>
+      </tr>`;
+  }).join("");
+  return `
+    <div style="margin:18px 0;border:1px solid #d7dde6;border-radius:8px;overflow:hidden;font-family:Segoe UI,Arial,sans-serif;color:#0b1726">
+      <div style="background:#101722;color:#fff;padding:18px 20px">
+        <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:700">Demonstrativo de reembolso</div>
+        <div style="font-size:22px;font-weight:800;margin-top:4px">${escapeHtml(prestacao.numero || `PC-${id}`)} - ${escapeHtml(prestacao.razao_social || prestacao.solicitante || "")}</div>
+        <div style="font-size:13px;margin-top:6px">${escapeHtml(prestacao.centro_custo || "-")} | ${escapeHtml(formatDate(prestacao.data_inicio))} a ${escapeHtml(formatDate(prestacao.data_fim))}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr>
+          <td style="padding:12px;border-right:1px solid #e5e7eb"><strong>Despesas</strong><br><span style="font-size:18px;font-weight:800">${escapeHtml(formatMoney(prestacao.total_despesas))}</span></td>
+          <td style="padding:12px;border-right:1px solid #e5e7eb"><strong>Adiantamento</strong><br><span style="font-size:18px;font-weight:800">${escapeHtml(formatMoney(prestacao.valor_adiantado))}</span></td>
+          <td style="padding:12px;border-right:1px solid #e5e7eb"><strong>A reembolsar</strong><br><span style="font-size:18px;font-weight:800">${escapeHtml(formatMoney(prestacao.valor_reembolsar))}</span></td>
+          <td style="padding:12px"><strong>A devolver</strong><br><span style="font-size:18px;font-weight:800">${escapeHtml(formatMoney(prestacao.saldo_devolver))}</span></td>
+        </tr>
+      </table>
+      <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+        <strong>Dados do solicitante</strong>
+        <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+          <tr><td style="padding:7px;background:#f5f7fa;width:130px;font-weight:700">Solicitante</td><td style="padding:7px">${escapeHtml(prestacao.solicitante || "")}</td><td style="padding:7px;background:#f5f7fa;width:130px;font-weight:700">CPF/CNPJ</td><td style="padding:7px">${escapeHtml(prestacao.documento || "")}</td></tr>
+          <tr><td style="padding:7px;background:#f5f7fa;font-weight:700">E-mail</td><td style="padding:7px">${escapeHtml(prestacao.email || "")}</td><td style="padding:7px;background:#f5f7fa;font-weight:700">Status</td><td style="padding:7px">${escapeHtml(prestacao.status || "")}</td></tr>
+        </table>
+      </div>
+      <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+        <strong>Despesas e comprovantes</strong>
+        <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+          <thead><tr>
+            <th align="left" style="padding:8px;background:#f5f7fa">Data</th>
+            <th align="left" style="padding:8px;background:#f5f7fa">Tipo</th>
+            <th align="left" style="padding:8px;background:#f5f7fa">Descrição</th>
+            <th align="right" style="padding:8px;background:#f5f7fa">Valor</th>
+            <th align="left" style="padding:8px;background:#f5f7fa">Comprovantes</th>
+          </tr></thead>
+          <tbody>${despesaRows || `<tr><td colspan="5" style="padding:10px;border-top:1px solid #e5e7eb">Nenhuma despesa cadastrada.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 async function reembolsoAdiantamentoEmailResumo(id, fallback = "") {
@@ -2783,6 +3037,61 @@ app.post("/api/auth/primeiro-acesso", asyncRoute(async (req, res) => {
   ))[0];
   res.setHeader("Set-Cookie", sessionCookie(token));
   res.status(201).json({ usuario: publicUser(current) });
+}));
+
+app.get("/email-action/reembolso", asyncRoute(async (req, res) => {
+  const payload = verifyEmailActionToken(req.query.token);
+  if (!payload || payload.kind !== "reembolso_prestacao" || !payload.id || !payload.email) {
+    return res.status(400).send("Link de aprovacao invalido ou expirado.");
+  }
+  const user = await findUsuarioForLogin(payload.email);
+  if (!user || !user.ativo) return res.status(403).send("Aprovador nao localizado ou inativo.");
+  let result;
+  if (payload.action === "aprovar") {
+    result = await aprovarPrestacaoReembolso(payload.id, user, "Aprovado pelo e-mail.");
+  } else if (payload.action === "reprovar") {
+    result = await reprovarPrestacaoReembolso(payload.id, user, payload.reason || "Reprovado pelo e-mail.");
+  } else {
+    return res.status(400).send("Acao nao reconhecida.");
+  }
+  const actionLabel = payload.action === "aprovar" ? "Aprovacao registrada" : "Reprovacao registrada";
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  return res.send(`<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(actionLabel)}</title></head>
+<body style="margin:0;font-family:Segoe UI,Arial,sans-serif;background:#f3f6fb;color:#0b1726">
+  <main style="max-width:560px;margin:48px auto;background:#fff;border:1px solid #d7dde6;border-radius:10px;padding:28px">
+    <h1 style="margin:0 0 10px">${escapeHtml(actionLabel)}</h1>
+    <p>Processo ${escapeHtml(String(payload.id))} atualizado com sucesso.</p>
+    <p><strong>Autenticacao:</strong> ${escapeHtml(result.autenticacao || "")}</p>
+    <p style="color:#667085">Voce ja pode fechar esta janela.</p>
+  </main>
+</body>
+</html>`);
+}));
+
+app.get("/email-action/comprovante", asyncRoute(async (req, res) => {
+  const payload = verifyEmailActionToken(req.query.token);
+  if (!payload || payload.kind !== "reembolso_comprovante" || !payload.comprovanteId || !payload.email) {
+    return res.status(400).send("Link de comprovante invalido ou expirado.");
+  }
+  const user = await findUsuarioForLogin(payload.email);
+  if (!user || !user.ativo || !reembolsoApprovalStepForUser(user)) return res.status(403).send("Acesso negado.");
+  const rows = await query(`
+    SELECT c.*, d.prestacao_id
+      FROM rd_reembolso_comprovantes c
+      JOIN rd_reembolso_despesas d ON d.id = c.despesa_id
+     WHERE c.id = ?
+     LIMIT 1
+  `, [payload.comprovanteId]);
+  if (!rows.length || Number(rows[0].prestacao_id) !== Number(payload.prestacaoId)) return res.status(404).send("Comprovante nao encontrado.");
+  const filePath = path.resolve(uploadDir, rows[0].caminho_arquivo);
+  const baseDir = path.resolve(uploadDir);
+  if (!filePath.startsWith(`${baseDir}${path.sep}`) || !fs.existsSync(filePath)) return res.status(404).send("Arquivo nao encontrado.");
+  const safeName = String(rows[0].nome_original || "comprovante").replace(/[\\"]/g, "");
+  res.setHeader("Content-Type", rows[0].mime_type || "application/octet-stream");
+  res.setHeader("Content-Disposition", `inline; filename="${safeName}"`);
+  return res.sendFile(filePath);
 }));
 
 app.use("/api", (req, res, next) => {
@@ -3571,59 +3880,23 @@ app.post("/api/prestacoes/:id/enviar", requireReembolsoPermission("reembolso_sol
   await execute("UPDATE rd_reembolso_prestacoes SET status = 'enviada_superior', enviado_em = ?, updated_at = ? WHERE id = ? AND status IN ('rascunho', 'reprovada_superior', 'reprovada_financeiro')", [nowSql(), nowSql(), req.params.id]);
   await addHistory(req.params.id, req.body.usuario_id || null, "enviou_aprovacao", "Prestacao enviada para aprovacao do superior.");
   const detalhe = await reembolsoPrestacaoEmailResumo(req.params.id, "Uma prestacao de contas de reembolso foi enviada para aprovacao.");
+  const prestacao = await getPrestacao(req.params.id);
   await sendReembolsoApprovalEmails({
-    titulo: `Prestação de contas ${req.params.id} aguardando aprovação`,
+    titulo: `Prestação ${prestacao?.numero || req.params.id} aguardando aprovação`,
     detalhe,
     link: `${approvalCentralUrl()}?tipo=reembolso_superior&id=${encodeURIComponent(req.params.id)}`,
-    emails: [REEMBOLSO_APPROVAL_FLOW[0].email]
+    emails: [REEMBOLSO_APPROVAL_FLOW[0].email],
+    prestacaoId: Number(req.params.id)
   });
   res.json({ ok: true });
 }));
 
 app.post("/api/prestacoes/:id/aprovar-superior", requireReembolsoPermission("reembolso_aprovar"), asyncRoute(async (req, res) => {
-  const prestacao = await getPrestacao(req.params.id);
-  if (!prestacao) return res.status(404).json({ error: "Prestacao nao encontrada." });
-  if (prestacao.status !== "enviada_superior") return res.status(400).json({ error: "Prestacao nao esta aguardando aprovacao." });
-  const expectedStep = await nextReembolsoApprovalStep(req.params.id);
-  if (!expectedStep) return res.status(400).json({ error: "Fluxo de aprovacao ja concluido." });
-  const userStep = reembolsoApprovalStepForUser(req.user);
-  if (!userStep || userStep.etapa !== expectedStep.etapa) {
-    return res.status(403).json({ error: `Esta etapa esta aguardando ${expectedStep.nome}.` });
-  }
-  const existing = await query("SELECT id FROM rd_reembolso_aprovacoes WHERE prestacao_id = ? AND usuario_id = ? AND decisao = 'aprovado' LIMIT 1", [req.params.id, req.user.id]);
-  if (existing.length) return res.status(400).json({ error: "Este aprovador ja aprovou esta prestacao." });
-  const codigo = authCode("APR");
-  const aprovadoEm = nowSql();
-  await execute("INSERT INTO rd_reembolso_aprovacoes (prestacao_id, usuario_id, etapa, decisao, justificativa, autenticacao, created_at) VALUES (?, ?, ?, 'aprovado', ?, ?, ?)", [req.params.id, req.user.id, expectedStep.etapa, req.body.justificativa || null, codigo, aprovadoEm]);
-  const nextStep = await nextReembolsoApprovalStep(req.params.id);
-  let dataPagamento = null;
-  if (nextStep) {
-    await execute("UPDATE rd_reembolso_prestacoes SET updated_at = ? WHERE id = ?", [aprovadoEm, req.params.id]);
-    const detalhe = await reembolsoPrestacaoEmailResumo(req.params.id, "Uma prestacao de contas de reembolso avancou para sua etapa de aprovacao.");
-    await sendReembolsoApprovalEmailsTo({
-      titulo: `Prestação de contas ${prestacao.numero || req.params.id} aguardando aprovação`,
-      detalhe,
-      link: `${approvalCentralUrl()}?tipo=reembolso_superior&id=${encodeURIComponent(req.params.id)}`,
-      emails: [nextStep.email]
-    });
-  } else {
-    try {
-      dataPagamento = calcularDataPagamentoReembolso(prestacao.created_at, aprovadoEm) || fallbackDataPagamentoReembolso();
-    } catch {
-      dataPagamento = fallbackDataPagamentoReembolso();
-    }
-    await execute("UPDATE rd_reembolso_prestacoes SET status = 'em_validacao_financeira', aprovado_superior_em = ?, data_pagamento_prevista = ?, updated_at = ? WHERE id = ?", [aprovadoEm, dataPagamento, aprovadoEm, req.params.id]);
-  }
-  await addHistory(req.params.id, req.user.id, "aprovou_superior", `${expectedStep.nome} aprovou a prestacao.`);
-  res.json({ ok: true, autenticacao: codigo, data_pagamento_prevista: dataPagamento, proxima_etapa: nextStep?.nome || "Financeiro" });
+  res.json(await aprovarPrestacaoReembolso(req.params.id, req.user, req.body.justificativa || null));
 }));
 
 app.post("/api/prestacoes/:id/reprovar-superior", requireReembolsoPermission("reembolso_aprovar"), asyncRoute(async (req, res) => {
-  const codigo = authCode("REP");
-  await execute("UPDATE rd_reembolso_prestacoes SET status = 'reprovada_superior', motivo_reprovacao = ?, updated_at = ? WHERE id = ?", [req.body.justificativa || null, nowSql(), req.params.id]);
-  await execute("INSERT INTO rd_reembolso_aprovacoes (prestacao_id, usuario_id, etapa, decisao, justificativa, autenticacao, created_at) VALUES (?, ?, 'superior', 'reprovado', ?, ?, ?)", [req.params.id, req.body.usuario_id, req.body.justificativa || null, codigo, nowSql()]);
-  await addHistory(req.params.id, req.body.usuario_id, "reprovou_superior", req.body.justificativa || "Superior reprovou a prestacao.");
-  res.json({ ok: true, autenticacao: codigo });
+  res.json(await reprovarPrestacaoReembolso(req.params.id, req.user, req.body.justificativa || null));
 }));
 
 app.post("/api/prestacoes/:id/aprovar-financeiro", requireReembolsoPermission("reembolso_financeiro"), asyncRoute(async (_req, res) => {
