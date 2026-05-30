@@ -1,0 +1,386 @@
+﻿<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redefrete | Reembolso de Despesas</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <section class="login-screen" id="loginScreen">
+    <form class="login-card" id="loginForm">
+      <div class="brand login-brand">
+        <img class="brand-logo" src="/assets/logo-redefrete-branco.png" alt="Redefrete">
+        <div>
+          <strong>redefrete</strong>
+          <span>Reembolso de Despesas</span>
+        </div>
+      </div>
+      <label>E-mail<input name="email" type="email" required autocomplete="username"></label>
+      <div class="access-check-box" id="accessCheckBox">
+        <button class="primary" id="checkAccessBtn" type="button">Continuar</button>
+      </div>
+      <div class="password-box" id="passwordBox" hidden>
+        <p class="muted" id="passwordMessage">E-mail localizado. Informe sua senha para entrar.</p>
+        <label>Senha<input type="password" name="senha" autocomplete="current-password"></label>
+      </div>
+      <div class="first-access-box" id="firstAccessBox" hidden>
+        <strong>Primeiro acesso</strong>
+        <p class="muted" id="firstAccessMessage">E-mail localizado no cadastro PJ. Cadastre sua senha para acessar somente o Reembolso de Despesas.</p>
+        <label>Criar senha<input type="password" name="senha_primeiro_acesso" autocomplete="new-password"></label>
+        <label>Confirmar senha<input type="password" name="confirmar_senha" autocomplete="new-password"></label>
+        <button class="ghost" id="createAccessBtn" type="button">Cadastrar senha</button>
+      </div>
+      <button class="primary" id="loginSubmitBtn" type="submit" hidden>Entrar</button>
+      <button class="ghost" id="changeEmailBtn" type="button" hidden>Trocar e-mail</button>
+      <p class="login-help">Use o e-mail cadastrado no prestador. No primeiro acesso, o sistema pedira o cadastro da senha.</p>
+      <p class="muted">Use o mesmo usuario e senha do sistema PJ-Redefrete.</p>
+    </form>
+  </section>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-logo" src="/assets/logo-redefrete-branco.png" alt="Redefrete">
+      <div>
+        <span>Reembolso de Despesas</span>
+      </div>
+    </div>
+    <nav>
+      <button class="nav-item active" data-view="dashboard"><span class="nav-icon nav-home" aria-hidden="true"></span><span>Painel</span></button>
+      <button class="nav-item" data-view="adiantamentos"><span class="nav-icon nav-money" aria-hidden="true"></span><span class="label-full">Adiantamentos</span><span class="label-short">Adiant.</span></button>
+      <button class="nav-item" data-view="prestacoes"><span class="nav-icon nav-doc" aria-hidden="true"></span><span class="label-full">Prestacoes</span><span class="label-short">Prest.</span></button>
+      <button class="nav-item" data-view="financeiro"><span class="nav-icon nav-card" aria-hidden="true"></span><span class="label-full">Financeiro</span><span class="label-short">Financ.</span></button>
+      <button class="nav-item" data-view="cadastros"><span class="nav-icon nav-gear" aria-hidden="true"></span><span class="label-full">Cadastros</span><span class="label-short">Cad.</span></button>
+    </nav>
+    <div class="connection">
+      <span class="connection-dot"></span>
+      <strong>Conectado</strong>
+      <small id="currentUserLabel">Mesmo MySQL do PJ-Redefrete</small>
+      <button id="accountMenuBtn" class="account-menu-button" type="button" aria-expanded="false" aria-controls="accountMenu">
+        <span id="accountAvatar" class="account-avatar" aria-hidden="true"><span class="avatar-head"></span><span class="avatar-body"></span></span>
+      </button>
+      <div class="connection-actions">
+        <strong id="accountFirstName" class="account-first-name">Usuario</strong>
+        <button id="changePasswordBtn" class="password-link" type="button">Senha</button>
+        <button id="logoutBtn" class="logout-button" type="button">Sair</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <h1 id="pageTitle">Painel de reembolsos</h1>
+      </div>
+      <div class="toolbar">
+        <button class="ghost" id="refreshBtn">Atualizar</button>
+        <button class="primary" id="newPrestacaoBtn">Nova prestacao</button>
+      </div>
+    </header>
+
+    <section id="status" class="status" hidden></section>
+    <section id="busyOverlay" class="busy-overlay" hidden>
+      <div class="busy-box">
+        <strong id="busyTitle">Integrando com Omie</strong>
+        <span id="busyMessage">Aguarde, estamos processando as informacoes.</span>
+        <div class="progress"><span></span></div>
+      </div>
+    </section>
+
+    <section class="view active" id="view-dashboard">
+      <div class="cards">
+        <article class="metric metric-action" data-dashboard-filter="adiantamentos_abertos" role="button" tabindex="0">
+          <span>Adiantamentos abertos</span>
+          <strong id="metricAdiantamentos">0</strong>
+          <small id="metricAdiantamentosValor">R$ 0,00</small>
+        </article>
+        <article class="metric metric-action" data-dashboard-filter="aprovacao" role="button" tabindex="0">
+          <span>Em aprovacao</span>
+          <strong id="metricAprovacao">0</strong>
+          <small>Com superior</small>
+        </article>
+        <article class="metric metric-action" data-dashboard-filter="financeiro" role="button" tabindex="0">
+          <span>Financeiro</span>
+          <strong id="metricFinanceiro">0</strong>
+          <small id="metricFinanceiroValor">R$ 0,00</small>
+        </article>
+        <article class="metric metric-action" data-dashboard-filter="finalizadas" role="button" tabindex="0">
+          <span>Finalizadas</span>
+          <strong id="metricFinalizadas">0</strong>
+          <small>Historico</small>
+        </article>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Prestacoes</h2>
+          <button class="ghost small" data-view-link="prestacoes">Ver todas</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Numero</th>
+                <th>Solicitante</th>
+                <th>Periodo</th>
+                <th>Status</th>
+                <th>Despesas</th>
+                <th>Adiantamentos</th>
+                <th>Resultado</th>
+              </tr>
+            </thead>
+            <tbody id="recentPrestacoes"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-adiantamentos">
+      <div class="panel">
+          <div class="panel-head">
+          <h2>Adiantamentos</h2>
+            <button class="primary small" id="novoAdiantamentoBtn" type="button">Novo adiantamento</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Numero</th>
+                  <th>Solicitante</th>
+                  <th>Data</th>
+                  <th>Valor</th>
+                  <th>Saldo</th>
+              <th>Status</th>
+              <th>Acao</th>
+                </tr>
+              </thead>
+              <tbody id="adiantamentosRows"></tbody>
+            </table>
+          </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-prestacoes">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Prestacoes</h2>
+          <div class="row-actions">
+            <input class="search" id="prestacaoSearch" placeholder="Filtrar por solicitante, numero ou status">
+            <select class="search" id="prestacaoStatusSelect" aria-label="Filtrar por status">
+              <option value="todos">Todos os status</option>
+              <option value="rascunho">Rascunho</option>
+              <option value="enviada_superior">Enviada ao superior</option>
+              <option value="em_validacao_financeira">Validação financeira</option>
+              <option value="a_pagar">A pagar</option>
+              <option value="a_devolver">A devolver</option>
+              <option value="reprovada_superior">Reprovada superior</option>
+              <option value="reprovada_financeiro">Reprovada financeiro</option>
+              <option value="pago">Pago</option>
+              <option value="finalizada">Finalizada</option>
+              <option value="cancelada">Cancelada</option>
+            </select>
+            <button class="primary small" id="novaPrestacaoListaBtn" type="button">Nova prestacao</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Numero</th>
+                <th>Solicitante</th>
+                <th>Periodo</th>
+                <th>Status</th>
+                <th>Despesas</th>
+                <th>Adiantamentos</th>
+                <th>Resultado</th>
+                <th>Acao</th>
+              </tr>
+            </thead>
+            <tbody id="prestacoesRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-financeiro">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Fila do financeiro</h2>
+          <div class="row-actions">
+            <button class="ghost small" id="selectFinanceiroOmieBtn" type="button">Selecionar elegiveis</button>
+            <button class="primary small" id="integrarSelecionadosBtn" type="button">Integrar selecionados</button>
+            <button class="ghost small" id="syncOmieBtn" type="button">Sincronizar pagamentos</button>
+          </div>
+        </div>
+        <p class="muted">Prestacoes aprovadas pelo superior ou em validacao financeira aparecem aqui.</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th></th>
+                <th>Numero</th>
+                <th>Solicitante</th>
+                <th>Despesas</th>
+                <th>Adiantamentos abatidos</th>
+                <th>Resultado financeiro</th>
+                <th>Pagamento previsto</th>
+                <th>Situacao</th>
+                <th>Acao</th>
+              </tr>
+            </thead>
+            <tbody id="financeiroRows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:16px">
+          <div class="panel-head account-current-head">
+            <h2>Conta corrente de adiantamentos</h2>
+            <div class="account-current-tools">
+              <label class="account-filter">Prestador com movimentacao<select id="contaPrestadorFiltro" aria-label="Filtrar por prestador"></select></label>
+              <div class="balance-card"><span>Saldo filtrado</span><strong id="saldoAdiantamentos">R$ 0,00</strong></div>
+              <button class="primary small" id="novaDevolucaoBtn" type="button">Nova devolucao</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Solicitante</th>
+                  <th>Documento</th>
+                  <th>Movimento</th>
+                  <th>Valor</th>
+                </tr>
+              </thead>
+              <tbody id="contaCorrenteRows"></tbody>
+            </table>
+          </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-cadastros">
+      <div class="cards">
+        <article class="panel">
+          <h2>Tipos de despesa</h2>
+          <div id="tiposList" class="tag-list"></div>
+        </article>
+        <article class="panel">
+          <h2>Centros de custo</h2>
+          <div id="centrosList" class="tag-list"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="changePasswordDialog">
+    <form method="dialog" class="modal-head">
+      <h2>Alterar senha</h2>
+      <button type="button" id="closeChangePasswordBtn">x</button>
+    </form>
+    <form class="panel form" id="changePasswordForm">
+      <label class="wide">Senha atual<input type="password" name="senha_atual" autocomplete="current-password" required></label>
+      <label>Nova senha<input type="password" name="nova_senha" autocomplete="new-password" required></label>
+      <label>Confirmar senha<input type="password" name="confirmar_senha" autocomplete="new-password" required></label>
+      <div class="actions wide">
+        <button type="button" id="cancelChangePasswordBtn" class="ghost">Cancelar</button>
+        <button type="submit" class="primary">Salvar senha</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="vinculosDialog">
+    <form method="dialog" class="modal-head">
+      <h2 id="vinculosTitle">Vinculos</h2>
+      <button type="button" id="closeVinculosBtn">x</button>
+    </form>
+    <div class="panel" id="vinculosBody"></div>
+  </dialog>
+
+  <dialog id="prestacaoDialog">
+    <form method="dialog" class="modal-head">
+      <h2 id="dialogTitle">Prestacao</h2>
+      <button>x</button>
+    </form>
+    <div id="prestacaoDetail"></div>
+  </dialog>
+
+  <dialog id="despesaDialog" class="expense-dialog">
+    <form method="dialog" class="modal-head">
+      <h2 id="despesaDialogTitle">Nova despesa</h2>
+      <button type="button" id="closeDespesaBtn">x</button>
+    </form>
+    <form class="panel form" id="despesaForm">
+      <label class="wide" id="despesaDocumentoFallback">Anexar documento fiscal<input type="file" name="documento" id="despesaDocumento" accept="image/*,.pdf"></label>
+      <div class="advance-summary wide" id="despesaDocumentoStatus">Informe os dados da despesa e anexe o comprovante correspondente.</div>
+      <label>Data<input type="date" name="data_despesa" required></label>
+      <label>Tipo<select name="tipo_despesa_id" id="despesaTipo" required></select></label>
+      <label>Valor<input type="number" inputmode="decimal" step="0.01" name="valor" required></label>
+      <label class="km-field">KM percorrido<input type="number" inputmode="decimal" step="0.01" name="quantidade_km" min="0"></label>
+      <label class="wide">Descricao<input name="descricao" list="descricaoSugestoes" required><datalist id="descricaoSugestoes"></datalist></label>
+      <div class="actions wide">
+        <button type="button" id="cancelDespesaBtn" class="ghost">Cancelar</button>
+        <button class="primary" type="submit" id="despesaSubmitBtn">Adicionar despesa</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="comprovanteDialog" class="viewer-dialog">
+    <form method="dialog" class="modal-head">
+      <h2 id="comprovanteTitle">Comprovante</h2>
+      <button>x</button>
+    </form>
+    <div id="comprovanteViewer" class="comprovante-viewer"></div>
+  </dialog>
+
+  <dialog id="adiantamentoDialog">
+    <form method="dialog" class="modal-head">
+      <h2 id="adiantamentoDialogTitle">Novo adiantamento</h2>
+      <button>x</button>
+    </form>
+    <form class="panel form" id="adiantamentoForm">
+      <label>Solicitante<select name="solicitante_id" required></select></label>
+      <label>Superior<select name="superior_id"></select></label>
+      <label>Data<input type="date" name="data_adiantamento" required></label>
+      <label>Valor<input type="number" inputmode="decimal" step="0.01" name="valor" required></label>
+      <label>Centro de custo<select name="centro_custo_id"></select></label>
+      <label class="wide">Finalidade<textarea name="finalidade" rows="3"></textarea></label>
+      <label class="wide">Descritivo<textarea name="descritivo" rows="3"></textarea></label>
+      <button class="primary wide" type="submit">Salvar adiantamento</button>
+    </form>
+  </dialog>
+
+  <dialog id="devolucaoDialog">
+    <form method="dialog" class="modal-head">
+      <h2>Devolucao de adiantamento</h2>
+      <button>x</button>
+    </form>
+    <form class="panel form" id="devolucaoForm">
+      <label>Prestador<select name="solicitante_id" required></select></label>
+      <label>Adiantamento<select name="adiantamento_id" required></select></label>
+      <div class="advance-summary wide" id="devolucaoResumo">Selecione um adiantamento.</div>
+      <label>Data<input type="date" name="data_devolucao" required></label>
+      <label>Valor<input type="number" inputmode="decimal" step="0.01" name="valor" required></label>
+      <div class="advance-summary wide" id="devolucaoDescricao">A descricao sera gerada automaticamente.</div>
+      <button class="primary wide" type="submit">Registrar devolucao</button>
+    </form>
+  </dialog>
+
+  <dialog id="prestacaoCreateDialog">
+    <form method="dialog" class="modal-head">
+      <h2>Nova prestacao</h2>
+      <button>x</button>
+    </form>
+    <form class="panel form" id="prestacaoForm">
+      <label>Solicitante<select name="solicitante_id" required></select></label>
+      <label>Superior<select name="superior_id"></select></label>
+      <label>Centro de custo<select name="centro_custo_id"></select></label>
+      <label>Data inicio<input type="date" name="data_inicio" required></label>
+      <label>Data fim<input type="date" name="data_fim" required></label>
+      <div class="advance-summary wide" id="advanceSummary">Sem adiantamentos aprovados em aberto.</div>
+      <label class="wide">Finalidade<textarea name="finalidade" rows="3"></textarea></label>
+      <button class="primary wide" type="submit">Criar prestacao</button>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

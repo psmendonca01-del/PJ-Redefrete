@@ -9,13 +9,26 @@
   <body>
     <section id="loginScreen" class="login-screen">
       <form id="loginForm" class="login-card">
-        <img src="/assets/logo-redefrete-branco.png" alt="Redefrete" />
+        <div class="brand login-brand">
+          <img src="/assets/logo-redefrete-branco.png" alt="Redefrete" />
+          <div>
+            <strong>redefrete</strong>
+            <span>Controle financeiro PJ</span>
+          </div>
+        </div>
         <div>
           <p class="eyebrow">Controle financeiro PJ</p>
           <h1>Acesso ao sistema</h1>
         </div>
-        <label>E-mail<input name="email" autocomplete="username" required /></label>
+        <label>E-mail<input name="email" type="email" inputmode="email" autocomplete="username" required /></label>
         <label>Senha<input name="senha" type="password" autocomplete="current-password" required /></label>
+        <div id="loginFirstAccess" class="first-access-box" hidden>
+          <strong>Primeiro acesso</strong>
+          <p class="muted">Cadastre uma nova senha para continuar.</p>
+          <label>Nova senha<input name="senha_primeiro_acesso" type="password" autocomplete="new-password" /></label>
+          <label>Confirmar senha<input name="confirmar_senha" type="password" autocomplete="new-password" /></label>
+          <button id="loginFirstAccessBtn" type="button" class="ghost">Cadastrar senha</button>
+        </div>
         <button type="submit" class="primary">Entrar</button>
         <p id="loginMessage" class="login-message"></p>
       </form>
@@ -47,6 +60,7 @@
             <strong id="currentUserName">-</strong>
             <span id="currentUserPerfil">-</span>
           </div>
+          <button id="changePassword" type="button">Alterar senha</button>
           <button id="logout" type="button">Sair</button>
           <button id="refresh" class="primary">Atualizar</button>
         </div>
@@ -106,18 +120,27 @@
               <legend>Dados do contrato</legend>
               <label>Funcao<select name="funcao_id"></select></label>
               <label>Categoria<select name="categoria_id"></select></label>
-              <label>Projeto<select name="projeto_id"></select></label>
+              <label>Cliente<select name="cliente_id" required></select></label>
+              <label>Projeto / Operação<select name="projeto_id"></select></label>
               <label>Nível do cargo
                 <select name="cargo_nivel" required>
                   <option value="operacao">Operação</option>
                   <option value="gestao">Gestão</option>
                 </select>
               </label>
-              <label>Unidade atendida<select name="unidade_id" required></select></label>
               <label>Departamento<select name="departamento_id"></select></label>
               <label>Admissao<input name="data_admissao" type="date" /></label>
               <label>Data rescisao<input name="data_rescisao" type="date" /></label>
-              <label>Salario contrato<input name="salario_contrato" type="number" step="0.01" required /></label>
+              <label>Forma de precificação
+                <select name="precificacao_tipo" required>
+                  <option value="mensal">R$/mês fechado</option>
+                  <option value="diaria">R$/dia trabalhado</option>
+                </select>
+              </label>
+              <label>R$ Contrato<input name="salario_contrato" type="number" inputmode="decimal" step="0.01" required /></label>
+              <label>Valor por dia<input name="valor_dia" type="number" inputmode="decimal" step="0.01" min="0" value="0" /></label>
+              <label>% multa rescisão Empresa<input name="rescisao_multa_empresa_percentual" type="number" inputmode="decimal" step="0.01" min="0" value="0" /></label>
+              <label>% multa rescisão Prestador<input name="rescisao_multa_prestador_percentual" type="number" inputmode="decimal" step="0.01" min="0" value="0" /></label>
               <label class="check"><input name="ativo" type="checkbox" checked /> Ativo</label>
             </fieldset>
             <fieldset>
@@ -141,6 +164,11 @@
               </div>
               <div class="list-actions">
                 <input id="searchPrestador" class="search" placeholder="Pesquisar prestador" />
+                <select id="prestadorStatusFilter" class="filter-select" aria-label="Filtrar status">
+                  <option value="todos">Todos</option>
+                  <option value="ativos">Ativos</option>
+                  <option value="inativos">Inativos</option>
+                </select>
                 <button type="button" id="newPrestador" class="primary">Novo</button>
               </div>
             </div>
@@ -167,8 +195,8 @@
               <div class="prestador-picker-list" data-prestador-results="adiantamento"></div>
             </div>
             <label>Data<input name="data_adiantamento" type="date" required /></label>
-            <label>Valor total<input name="valor_total" type="number" step="0.01" required /></label>
-            <label>Parcelas<input name="parcelas" type="number" min="1" value="1" required /></label>
+            <label>Valor total<input name="valor_total" type="number" inputmode="decimal" step="0.01" required /></label>
+            <label>Parcelas<input name="parcelas" type="number" inputmode="numeric" min="1" value="1" required /></label>
             <label>Primeiro desconto<input name="competencia_inicial" type="month" required /></label>
             <label class="wide">Observacao<input name="observacao" /></label>
             <div class="actions wide">
@@ -209,10 +237,24 @@
       </section>
 
       <section id="rescisoes" class="view">
-        <div class="rescisao-workspace">
+        <div class="panel rescisoes-panel">
+          <div class="entity-command-bar">
+            <div>
+              <h2>Rescisões registradas</h2>
+              <span>Fluxo de NF, aprovação, finalização e Omie</span>
+            </div>
+            <button type="button" id="newRescisao" class="primary">Nova rescisão</button>
+          </div>
+          <div class="table-wrap">
+            <table id="rescisoesTable"></table>
+          </div>
+        </div>
+
+        <div id="rescisaoModal" class="rescisao-workspace form-modal" aria-hidden="true">
           <form id="rescisaoForm" class="panel form-grid compact">
             <div class="panel-head wide">
               <h2>Rescisão de contrato PJ</h2>
+              <button type="button" id="closeRescisaoModal" class="icon-button" aria-label="Fechar">&times;</button>
             </div>
             <div class="wide prestador-picker" data-prestador-picker="rescisao">
               <label>Prestador
@@ -222,7 +264,14 @@
               <div class="prestador-picker-list" data-prestador-results="rescisao"></div>
             </div>
             <label>Data da rescisão<input name="data_rescisao" type="date" required /></label>
-            <label>Descontos manuais<input name="descontos_manual" type="number" step="0.01" value="0" /></label>
+            <label>Data do aviso<input name="data_aviso" type="date" required /></label>
+            <label>Tipo
+              <select name="tipo_rescisao" required>
+                <option value="empresa">Empresa rescinde</option>
+                <option value="prestador">Prestador rescinde</option>
+              </select>
+            </label>
+            <label>Descontos manuais<input name="descontos_manual" type="number" inputmode="decimal" step="0.01" value="0" /></label>
             <label class="wide">Motivo<input name="motivo" /></label>
             <div class="actions wide">
               <button type="button" id="calcularRescisao">Calcular</button>
@@ -237,18 +286,7 @@
             <div id="rescisaoPreview" class="rescisao-preview">Informe prestador e data para calcular.</div>
           </div>
         </div>
-
-        <div class="panel rescisoes-panel">
-          <div class="entity-command-bar">
-            <div>
-              <h2>Rescisões registradas</h2>
-              <span>Fluxo de NF, aprovação, finalização e Omie</span>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table id="rescisoesTable"></table>
-          </div>
-        </div>
+        <div id="rescisaoBackdrop" class="modal-backdrop" aria-hidden="true"></div>
       </section>
 
       <section id="folha" class="view">
@@ -271,6 +309,7 @@
             </div>
             <div class="folha-actions">
               <button type="button" id="aprovarFolha">Aprovar folha</button>
+              <button type="button" id="reprovarFolha">Reprovar folha</button>
               <button type="button" id="solicitarNfs">Solicitar NFs</button>
               <button type="button" id="enviarAprovacaoFolha">Enviar aprovação</button>
               <button type="button" id="folhaReport">Relatório</button>
@@ -285,6 +324,11 @@
           </div>
           <div class="filter-bar folha-filter-bar">
             <label>Buscar pagamento<input id="folhaSearch" type="search" placeholder="Prestador, razão social, CNPJ, NF..." /></label>
+            <label>Categoria
+              <select id="folhaCategoriaFilter">
+                <option value="">Todas</option>
+              </select>
+            </label>
             <label>Status NF
               <select id="folhaNfFilter">
                 <option value="">Todos</option>
@@ -310,6 +354,7 @@
             </label>
           </div>
           <div id="folhaTotals" class="totals-bar"></div>
+          <div id="folhaLotes" class="lotes-bar"></div>
           <div class="table-wrap">
             <table id="folhaPreview"></table>
           </div>
@@ -332,20 +377,36 @@
             <h2>Usuários e permissões</h2>
             <button type="button" class="icon-button" data-close-config-modal aria-label="Fechar">&times;</button>
           </div>
-          <div class="usuario-config-layout">
-            <div class="usuario-list">
-              <div class="entity-subhead">
+          <div class="usuario-list">
+            <div class="entity-subhead">
+              <div>
                 <h3>Usuários cadastrados</h3>
-                <span>Selecione um usuário para editar</span>
+                <span>Clique no nome para editar permissões e vínculo PJ</span>
               </div>
-              <div class="table-wrap compact-table">
-                <table id="usuariosTable"></table>
-              </div>
+              <button type="button" id="newUsuario" class="primary">Novo usuário</button>
             </div>
+            <div class="user-filter-bar" role="group" aria-label="Filtro de usuários">
+              <button type="button" class="active" data-user-filter="todos">Todos</button>
+              <button type="button" data-user-filter="geral">Acesso geral</button>
+              <button type="button" data-user-filter="reembolso">Somente Reembolso</button>
+            </div>
+            <div class="table-wrap compact-table">
+              <table id="usuariosTable"></table>
+            </div>
+          </div>
+        </div>
+        <div id="usuarioModal" class="panel config-panel usuario-modal">
+          <div class="panel-head">
+            <h2 id="usuarioModalTitle">Novo usuário</h2>
+            <button type="button" id="closeUsuarioModal" class="icon-button" aria-label="Fechar">&times;</button>
+          </div>
             <form id="usuarioForm" class="form-grid usuario-form">
               <input type="hidden" name="id" />
               <label>Nome<input name="nome" required /></label>
               <label>E-mail<input name="email" required /></label>
+              <label class="wide">Prestador vinculado
+                <select name="prestador_id"></select>
+              </label>
               <label>Perfil
                 <select name="perfil" required>
                   <option value="master">Master</option>
@@ -363,12 +424,26 @@
                 <div id="usuarioPermissoes" class="permission-grid"></div>
               </fieldset>
               <div class="actions wide">
-                <button type="button" id="clearUsuario">Novo usuário</button>
+                <button type="button" id="clearUsuario">Cancelar</button>
                 <button type="submit" class="primary">Salvar usuário</button>
               </div>
             </form>
-          </div>
         </div>
+        <dialog id="changePasswordDialog" class="simple-dialog">
+          <form id="changePasswordForm" class="form-grid" method="dialog">
+            <div class="panel-head wide">
+              <h2>Alterar senha</h2>
+              <button type="button" id="closeChangePassword" class="icon-button" aria-label="Fechar">&times;</button>
+            </div>
+            <label class="wide">Senha atual<input name="senha_atual" type="password" autocomplete="current-password" required /></label>
+            <label>Nova senha<input name="nova_senha" type="password" autocomplete="new-password" required /></label>
+            <label>Confirmar senha<input name="confirmar_senha" type="password" autocomplete="new-password" required /></label>
+            <div class="actions wide">
+              <button type="button" id="cancelChangePassword">Cancelar</button>
+              <button type="submit" class="primary">Salvar senha</button>
+            </div>
+          </form>
+        </dialog>
         <div id="smtpPanel" class="panel config-panel">
           <div class="panel-head">
             <h2>Configuração de e-mail</h2>
@@ -418,7 +493,7 @@
           <form id="omieForm" class="form-grid">
             <label>App Key<input name="appKey" placeholder="App Key da Omie" /></label>
             <label>App Secret<input name="appSecret" type="password" placeholder="Manter secret atual" /></label>
-            <label>Dia de vencimento<input name="dueDay" type="number" min="1" max="28" value="5" /></label>
+            <label>Dia de vencimento<input name="dueDay" type="number" inputmode="numeric" min="1" max="28" value="5" /></label>
             <label>ID conta corrente<input name="contaCorrenteId" placeholder="Opcional: codigo interno da conta Omie" /></label>
             <label>Banco<input name="banco" value="341" /></label>
             <label>Agência<input name="agencia" value="1268" /></label>
@@ -450,6 +525,13 @@
     </div>
     <div id="compositionBackdrop" class="modal-backdrop" aria-hidden="true"></div>
     <div id="configBackdrop" class="modal-backdrop"></div>
+    <div id="busyOverlay" class="busy-overlay" hidden>
+      <div class="busy-box">
+        <strong id="busyTitle">Integrando com Omie</strong>
+        <span id="busyMessage">Aguarde, estamos processando as informações.</span>
+        <div class="progress"><span></span></div>
+      </div>
+    </div>
     <div id="toast" role="status"></div>
     <script src="/app.js"></script>
   </body>

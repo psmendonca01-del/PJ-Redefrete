@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aprovações Redefrete</title>
+    <link rel="stylesheet" href="/aprovacoes.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section id="loginCard" class="card login-card" hidden>
+        <div class="brand login-brand">
+          <img src="/assets/logo-redefrete-branco.png" alt="Redefrete" />
+          <div>
+            <strong>redefrete</strong>
+            <span>Aprovações</span>
+          </div>
+        </div>
+        <h1>Aprovações</h1>
+        <p>Entre para revisar pendências pelo celular.</p>
+        <form id="loginForm" class="stack">
+          <label>E-mail<input name="email" type="email" inputmode="email" autocomplete="username" required /></label>
+          <label>Senha<input name="senha" type="password" autocomplete="current-password" required /></label>
+          <button class="primary" type="submit">Entrar</button>
+        </form>
+        <p id="loginMessage" class="message"></p>
+      </section>
+
+      <section id="approvalApp" hidden>
+        <header class="mobile-head">
+          <div>
+            <img class="head-logo" src="/assets/logo-redefrete-branco.png" alt="Redefrete" />
+            <h1>Aprovações</h1>
+          </div>
+          <div class="head-actions">
+            <button id="refresh" type="button">Atualizar</button>
+            <button id="logout" type="button">Sair</button>
+          </div>
+        </header>
+        <p id="userLine" class="user-line"></p>
+        <div id="approvalList" class="approval-list"></div>
+      </section>
+    </main>
+
+    <dialog id="detailsDialog" class="details-dialog">
+      <form method="dialog" class="dialog-head">
+        <h2 id="detailsTitle">Detalhes</h2>
+        <button type="submit">×</button>
+      </form>
+      <div id="detailsBody" class="details-body"></div>
+    </dialog>
+
+    <section id="busyOverlay" class="busy-overlay" hidden>
+      <div class="busy-box">
+        <strong id="busyTitle">Processando</strong>
+        <span id="busyMessage">Aguarde, o sistema está operando.</span>
+        <div class="progress"><span></span></div>
+      </div>
+    </section>
+
+    <div id="toast" role="status"></div>
+    <script src="/aprovacoes.js"></script>
+  </body>
+</html>

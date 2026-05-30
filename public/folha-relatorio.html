@@ -191,6 +191,40 @@
         white-space: nowrap;
       }
 
+      .status-tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .status-tag.ok {
+        background: #dcfce7;
+        color: #166534;
+      }
+
+      .status-tag.warn {
+        background: #fef3c7;
+        color: #92400e;
+      }
+
+      .status-tag.error {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+
+      .exception-note {
+        margin: 0;
+        padding: 0 16px 10px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
       .total-row td {
         background: #f8fafc;
         font-weight: 900;
@@ -295,6 +329,118 @@
         return items.reduce((total, item) => total + Number(item[field] || 0), 0);
       }
 
+      function nfStatusLabel(status) {
+        const labels = {
+          validada: "NF validada",
+          divergente: "NF divergente",
+          erro: "Erro na NF",
+          pendente: "NF pendente",
+        };
+        return labels[status || "pendente"] || status || "NF pendente";
+      }
+
+      function paymentException(item) {
+        const reasons = [];
+        const nfStatus = item.nf_status || "pendente";
+        const numeroNf = item.numero_nf || item.nf_numero || "";
+        const valorNf = Number(item.valor_nf_emitida || item.nf_valor || 0);
+        const totalPagar = Number(item.liquido_pagar || 0);
+        const diferenca = Number(item.diferenca_nf || 0);
+
+        if (nfStatus !== "validada") reasons.push(nfStatusLabel(nfStatus));
+        if (!numeroNf) reasons.push("Número da NF não informado");
+        if (valorNf <= 0) reasons.push("Valor da NF não informado");
+        if (Math.abs(diferenca) > 0.01) reasons.push(`Diferença de NF ${money(diferenca)}`);
+        if (totalPagar <= 0) reasons.push("Total a pagar zerado");
+
+        return reasons.length ? {
+          prestador: item.razao_social || item.nome || "",
+          nome: item.nome || "",
+          cnpj: item.cnpj || item.cpf || "",
+          categoria: item.categoria || "",
+          nfStatus,
+          numeroNf,
+          valorNf,
+          totalPagar,
+          motivo: [...new Set(reasons)].join("; "),
+        } : null;
+      }
+
+      function subtotalKey(value) {
+        return String(value || "Sem categoria").trim() || "Sem categoria";
+      }
+
+      function subtotalRows(items, groupFn) {
+        const grouped = new Map();
+        for (const item of items) {
+          const key = groupFn(item);
+          const current = grouped.get(key) || {
+            label: key,
+            pessoas: 0,
+            valorDias: 0,
+            adicoes: 0,
+            bonus: 0,
+            descontos: 0,
+            adiantamentos: 0,
+            nfEmitida: 0,
+            liquido: 0,
+            diferenca: 0,
+          };
+          current.pessoas += 1;
+          current.valorDias += Number(item.valor_dias || 0);
+          current.adicoes += Number(item.adicoes || 0);
+          current.bonus += Number(item.bonus || 0);
+          current.descontos += Number(item.descontos_manual || 0);
+          current.adiantamentos += Number(item.desconto_adiantamentos || 0);
+          current.nfEmitida += Number(item.valor_nf_emitida || 0);
+          current.liquido += Number(item.liquido_pagar || 0);
+          current.diferenca += Number(item.diferenca_nf || 0);
+          grouped.set(key, current);
+        }
+        return [...grouped.values()].sort((a, b) => a.label.localeCompare(b.label, "pt-BR", { sensitivity: "base" }));
+      }
+
+      function renderSubtotalTable(title, rows) {
+        return `
+          <div class="section-title">
+            <h2>${escapeHtml(title)}</h2>
+            <span>${rows.length} grupo(s)</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Grupo</th>
+                <th class="num">Pessoas</th>
+                <th class="num">Valor dias</th>
+                <th class="num">Adições</th>
+                <th class="num">Bônus</th>
+                <th class="num">Desc.</th>
+                <th class="num">Adiant.</th>
+                <th class="num">NF</th>
+                <th class="num">Líquido</th>
+                <th class="num">Dif. NF</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => `
+                <tr>
+                  <td><strong>${escapeHtml(row.label)}</strong></td>
+                  <td class="num">${row.pessoas}</td>
+                  <td class="num">${money(row.valorDias)}</td>
+                  <td class="num">${money(row.adicoes)}</td>
+                  <td class="num">${money(row.bonus)}</td>
+                  <td class="num">${money(row.descontos)}</td>
+                  <td class="num">${money(row.adiantamentos)}</td>
+                  <td class="num">${money(row.nfEmitida)}</td>
+                  <td class="num"><strong>${money(row.liquido)}</strong></td>
+                  <td class="num">${money(row.diferenca)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        `;
+      }
+
       async function loadReportData() {
         const key = params.get("key");
         const stored = key ? sessionStorage.getItem(key) : null;
@@ -305,7 +451,7 @@
         const response = await fetch(`/api/folhas/${encodeURIComponent(competencia)}`);
         if (!response.ok) throw new Error("Não foi possível carregar a folha.");
         const data = await response.json();
-        return { folha: data.folha, itens: data.itens, aprovacoes: data.aprovacoes, geradoEm: new Date().toISOString() };
+        return { folha: data.folha, itens: data.itens, aprovacoes: data.aprovacoes, lotes: data.lotes || [], geradoEm: new Date().toISOString() };
       }
 
       function renderReport(data) {
@@ -326,6 +472,15 @@
         const descontos = totals.descontos + totals.adiantamentos;
         const aprovacoes = data.aprovacoes || folha.aprovacoes || {};
         const aprovadores = aprovacoes.aprovadores || [];
+        const lotes = data.lotes || [];
+        const excecoesPagamento = itens.map(paymentException).filter(Boolean);
+        const aptosPagamento = itens.length - excecoesPagamento.length;
+        const exceptionIds = new Set(excecoesPagamento.map((item) => `${item.cnpj}|${item.prestador}`));
+        const subtotalCategoria = subtotalRows(itens, (item) => subtotalKey(item.categoria));
+        const subtotalSituacao = subtotalRows(itens, (item) => {
+          const key = `${item.cnpj || item.cpf || ""}|${item.razao_social || item.nome || ""}`;
+          return exceptionIds.has(key) ? "Fora do pagamento no prazo" : "Apto para pagamento";
+        });
 
         document.title = `Relatório folha PJ - ${folha.competencia || ""}`;
         document.querySelector("#report").innerHTML = `
@@ -347,12 +502,80 @@
 
           <section class="summary">
             <article><span>Prestadores</span><strong>${itens.length}</strong></article>
-            <article><span>Salário base</span><strong>${money(totals.salario)}</strong></article>
+            <article><span>R$ Contrato</span><strong>${money(totals.salario)}</strong></article>
             <article><span>Proventos</span><strong>${money(proventos)}</strong></article>
             <article><span>Descontos</span><strong>${money(descontos)}</strong></article>
             <article><span>Total líquido</span><strong>${money(totals.liquido)}</strong></article>
             <article><span>Dif. NF</span><strong>${money(totals.diferenca)}</strong></article>
           </section>
+
+          <div class="section-title">
+            <h2>Lotes de pagamento</h2>
+            <span>${lotes.length} lote(s) registrado(s)</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Lote</th>
+                <th>Status</th>
+                <th class="num">Itens</th>
+                <th class="num">Total</th>
+                <th>Criado em</th>
+                <th>Fechado em</th>
+                <th>Integrado em</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${lotes.length ? lotes.map((lote) => `
+                <tr>
+                  <td><strong>${escapeHtml(lote.label || `Lote ${lote.numero}`)}</strong></td>
+                  <td>${escapeHtml(({ em_aprovacao: "Em aprovação", reprovado: "Reprovado", fechado: "Fechado", integrado_omie: "Integrado Omie" })[lote.status] || lote.status || "")}</td>
+                  <td class="num">${Number(lote.itens || 0)}</td>
+                  <td class="num">${money(lote.total)}</td>
+                  <td>${lote.criado_em ? escapeHtml(formatDateTime(lote.criado_em)) : "-"}</td>
+                  <td>${lote.fechado_em ? escapeHtml(formatDateTime(lote.fechado_em)) : "-"}</td>
+                  <td>${lote.integrado_em ? escapeHtml(formatDateTime(lote.integrado_em)) : "-"}</td>
+                </tr>
+              `).join("") : `<tr><td colspan="7">Nenhum lote de pagamento registrado para esta competência.</td></tr>`}
+            </tbody>
+          </table>
+
+          <div class="section-title">
+            <h2>Status de pagamento no prazo</h2>
+            <span>${aptosPagamento} apto(s) | ${excecoesPagamento.length} fora do prazo</span>
+          </div>
+          <p class="exception-note">Prestadores listados abaixo possuem pendência que impede o pagamento no fluxo normal da competência.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Prestador</th>
+                <th>CPF/CNPJ</th>
+                <th>Categoria</th>
+                <th>Status NF</th>
+                <th>N NF</th>
+                <th class="num">Valor NF</th>
+                <th class="num">Total a pagar</th>
+                <th>Motivo</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${excecoesPagamento.length ? excecoesPagamento.map((item) => `
+                <tr>
+                  <td><strong>${escapeHtml(item.prestador)}</strong><small>${escapeHtml(item.nome)}</small></td>
+                  <td>${escapeHtml(item.cnpj)}</td>
+                  <td>${escapeHtml(item.categoria || "-")}</td>
+                  <td><span class="status-tag ${item.nfStatus === "validada" ? "ok" : item.nfStatus === "divergente" ? "warn" : "error"}">${escapeHtml(nfStatusLabel(item.nfStatus))}</span></td>
+                  <td>${escapeHtml(item.numeroNf || "-")}</td>
+                  <td class="num">${money(item.valorNf)}</td>
+                  <td class="num">${money(item.totalPagar)}</td>
+                  <td>${escapeHtml(item.motivo)}</td>
+                </tr>
+              `).join("") : `<tr><td colspan="8">Nenhum prestador fora do fluxo normal de pagamento.</td></tr>`}
+            </tbody>
+          </table>
+
+          ${renderSubtotalTable("Subtotais por categoria", subtotalCategoria)}
+          ${renderSubtotalTable("Subtotais por situação de pagamento", subtotalSituacao)}
 
           <div class="section-title">
             <h2>Resumo por prestador</h2>
@@ -366,7 +589,7 @@
                 <th>CPF/CNPJ</th>
                 <th>Lotação</th>
                 <th class="num">Dias</th>
-                <th class="num">Salário</th>
+                <th class="num">R$ Contrato</th>
                 <th class="num">Valor dias</th>
                 <th class="num">Adições</th>
                 <th class="num">Bônus</th>

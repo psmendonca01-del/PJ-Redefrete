@@ -1,5 +1,6 @@
 ﻿const state = {
   prestadores: [],
+  clientes: [],
   unidades: [],
   funcoes: [],
   categorias: [],
@@ -10,18 +11,25 @@
   usuarios: [],
   folhas: [],
   folhaPreview: [],
+  folhaLotes: [],
   comparativo: [],
   folhaAtual: null,
+  folhaDraftDirty: false,
+  folhaDraftSaving: null,
+  folhaDraftTimer: null,
   adiantamentoFilter: "todos",
   folhaFilters: {
     search: "",
+    categoria: "",
     nf: "",
     omie: "",
     diff: "",
   },
+  usuarioAccessFilter: "todos",
   cadastroTipoAtivo: "categorias",
   authUser: null,
   cadastroConfig: {
+    clientes: [],
     unidades: [],
     funcoes: [],
     categorias: [],
@@ -34,19 +42,30 @@
   emailTemplates: [],
   emailTemplateVars: {},
   emailTemplateAtivo: "folha_nf",
+  prestadorStatusFilter: "todos",
 };
 
 const el = {
   loginScreen: document.querySelector("#loginScreen"),
   loginForm: document.querySelector("#loginForm"),
+  loginFirstAccess: document.querySelector("#loginFirstAccess"),
+  loginFirstAccessBtn: document.querySelector("#loginFirstAccessBtn"),
   loginMessage: document.querySelector("#loginMessage"),
   status: document.querySelector("#status"),
   statusDot: document.querySelector("#statusDot"),
   pageTitle: document.querySelector("#pageTitle"),
   refresh: document.querySelector("#refresh"),
   toast: document.querySelector("#toast"),
+  busyOverlay: document.querySelector("#busyOverlay"),
+  busyTitle: document.querySelector("#busyTitle"),
+  busyMessage: document.querySelector("#busyMessage"),
   currentUserName: document.querySelector("#currentUserName"),
   currentUserPerfil: document.querySelector("#currentUserPerfil"),
+  changePassword: document.querySelector("#changePassword"),
+  changePasswordDialog: document.querySelector("#changePasswordDialog"),
+  changePasswordForm: document.querySelector("#changePasswordForm"),
+  closeChangePassword: document.querySelector("#closeChangePassword"),
+  cancelChangePassword: document.querySelector("#cancelChangePassword"),
   logout: document.querySelector("#logout"),
   metrics: {
     prestadores: document.querySelector("#metricPrestadores"),
@@ -57,12 +76,17 @@ const el = {
   prestadorModalTitle: document.querySelector("#prestadorModalTitle"),
   prestadorBackdrop: document.querySelector("#prestadorBackdrop"),
   newPrestador: document.querySelector("#newPrestador"),
+  clearPrestador: document.querySelector("#clearPrestador"),
   closePrestadorModal: document.querySelector("#closePrestadorModal"),
   adiantamentoForm: document.querySelector("#adiantamentoForm"),
   adiantamentoBackdrop: document.querySelector("#adiantamentoBackdrop"),
   newAdiantamento: document.querySelector("#newAdiantamento"),
   closeAdiantamentoModal: document.querySelector("#closeAdiantamentoModal"),
   rescisaoForm: document.querySelector("#rescisaoForm"),
+  rescisaoModal: document.querySelector("#rescisaoModal"),
+  rescisaoBackdrop: document.querySelector("#rescisaoBackdrop"),
+  newRescisao: document.querySelector("#newRescisao"),
+  closeRescisaoModal: document.querySelector("#closeRescisaoModal"),
   folhaForm: document.querySelector("#folhaForm"),
   prestadoresTable: document.querySelector("#prestadoresTable"),
   adiantamentosTable: document.querySelector("#adiantamentosTable"),
@@ -75,7 +99,9 @@ const el = {
   folhaReport: document.querySelector("#folhaReport"),
   integrarOmie: document.querySelector("#integrarOmie"),
   reabrirFolha: document.querySelector("#reabrirFolha"),
+  importarNfsFechadas: document.querySelector("#importarNfsFechadas"),
   aprovarFolha: document.querySelector("#aprovarFolha"),
+  reprovarFolha: document.querySelector("#reprovarFolha"),
   solicitarNfs: document.querySelector("#solicitarNfs"),
   enviarAprovacaoFolha: document.querySelector("#enviarAprovacaoFolha"),
   approvalStatus: document.querySelector("#approvalStatus"),
@@ -92,12 +118,18 @@ const el = {
   cadastrosConfig: document.querySelector("#cadastrosConfig"),
   usuarioForm: document.querySelector("#usuarioForm"),
   usuariosTable: document.querySelector("#usuariosTable"),
+  usuarioModal: document.querySelector("#usuarioModal"),
+  usuarioModalTitle: document.querySelector("#usuarioModalTitle"),
+  newUsuario: document.querySelector("#newUsuario"),
+  closeUsuarioModal: document.querySelector("#closeUsuarioModal"),
   clearUsuario: document.querySelector("#clearUsuario"),
   folhasTable: document.querySelector("#folhasTable"),
   folhaPreview: document.querySelector("#folhaPreview"),
   folhaHint: document.querySelector("#folhaHint"),
   folhaTotals: document.querySelector("#folhaTotals"),
+  folhaLotes: document.querySelector("#folhaLotes"),
   folhaSearch: document.querySelector("#folhaSearch"),
+  folhaCategoriaFilter: document.querySelector("#folhaCategoriaFilter"),
   folhaNfFilter: document.querySelector("#folhaNfFilter"),
   folhaOmieFilter: document.querySelector("#folhaOmieFilter"),
   folhaDiffFilter: document.querySelector("#folhaDiffFilter"),
@@ -107,6 +139,7 @@ const el = {
   deptCards: document.querySelector("#deptCards"),
   deptDrill: document.querySelector("#deptDrill"),
   searchPrestador: document.querySelector("#searchPrestador"),
+  prestadorStatusFilter: document.querySelector("#prestadorStatusFilter"),
   configHub: document.querySelector("#configHub"),
   configBackdrop: document.querySelector("#configBackdrop"),
   compositionModal: document.querySelector("#compositionModal"),
@@ -134,8 +167,60 @@ const permissionLabels = [
   ["manage_users", "Gerenciar usuarios"],
   ["manage_omie_config", "Configurar Omie"],
   ["manage_smtp", "Configurar e-mail"],
+  ["reembolso_acessar", "Reembolso: acessar"],
+  ["reembolso_solicitar", "Reembolso: solicitar"],
+  ["reembolso_aprovar", "Reembolso: aprovar"],
+  ["reembolso_financeiro", "Reembolso: financeiro"],
+  ["reembolso_admin", "Reembolso: administrar"],
+  ["reembolso_integrar_omie", "Reembolso: integrar Omie"],
+  ["reembolso_relatorio", "Reembolso: relatórios"],
 ];
 const permissionKeys = permissionLabels.map(([key]) => key);
+const permissionLabelMap = Object.fromEntries(permissionLabels);
+const simoneExceptionPrestadorId = 23;
+const permissionGroups = [
+  {
+    title: "PJ-Redefrete",
+    detail: "Folha PJ, prestadores, rescisões, adiantamentos e operação mensal.",
+    keys: [
+      "view_prestadores",
+      "edit_prestadores",
+      "view_folhas",
+      "close_folhas",
+      "reopen_folhas",
+      "approve_folhas",
+      "generate_reports",
+      "integrate_omie",
+      "view_values_open",
+      "view_values_closed",
+      "manage_adiantamentos",
+      "manage_rescisoes",
+    ],
+  },
+  {
+    title: "Reembolso de Despesas",
+    detail: "Solicitações, aprovações, financeiro, relatórios e integração Omie do reembolso.",
+    keys: [
+      "reembolso_acessar",
+      "reembolso_solicitar",
+      "reembolso_aprovar",
+      "reembolso_financeiro",
+      "reembolso_admin",
+      "reembolso_integrar_omie",
+      "reembolso_relatorio",
+    ],
+  },
+  {
+    title: "Configurações",
+    detail: "Tabelas auxiliares, usuários, Omie e configuração de e-mail.",
+    keys: [
+      "manage_cadastros",
+      "manage_users",
+      "manage_omie_config",
+      "manage_smtp",
+    ],
+  },
+];
 const allPermissions = Object.fromEntries(permissionKeys.map((key) => [key, true]));
 const defaultPermissionsByPerfil = {
   master: allPermissions,
@@ -146,6 +231,10 @@ const defaultPermissionsByPerfil = {
     generate_reports: true,
     integrate_omie: true,
     view_values_closed: true,
+    reembolso_acessar: true,
+    reembolso_financeiro: true,
+    reembolso_relatorio: true,
+    reembolso_integrar_omie: true,
   },
   operacional: {
     view_prestadores: true,
@@ -156,15 +245,22 @@ const defaultPermissionsByPerfil = {
     manage_adiantamentos: true,
     manage_rescisoes: true,
     manage_cadastros: true,
+    reembolso_acessar: true,
+    reembolso_solicitar: true,
   },
   aprovador: {
     view_folhas: true,
     approve_folhas: true,
     view_values_open: true,
     view_values_closed: true,
+    reembolso_acessar: true,
+    reembolso_aprovar: true,
+    reembolso_relatorio: true,
   },
   consulta: {
     view_prestadores: true,
+    reembolso_acessar: true,
+    reembolso_solicitar: true,
   },
 };
 
@@ -201,6 +297,23 @@ function daysInCompetencia(competencia) {
 
 function payrollBaseDays() {
   return 30;
+}
+
+function pricingType(item) {
+  return item?.precificacao_tipo === "diaria" ? "diaria" : "mensal";
+}
+
+function isDailyPriced(item) {
+  return pricingType(item) === "diaria";
+}
+
+function folhaBaseValue(item) {
+  return isDailyPriced(item) ? Number(item.valor_dia || 0) : Number(item.salario_contrato || item.salario_base || 0);
+}
+
+function folhaValorDias(item, dias) {
+  const base = folhaBaseValue(item);
+  return Number((isDailyPriced(item) ? base * Number(dias || 0) : (base / payrollBaseDays()) * Number(dias || 0)).toFixed(2));
 }
 
 function workedDaysForItem(item, competencia) {
@@ -246,19 +359,44 @@ function toast(message) {
   window.setTimeout(() => el.toast.classList.remove("show"), 3600);
 }
 
+let busyDepth = 0;
+
+function showBusy(title = "Integrando com Omie", message = "Aguarde, estamos processando as informações.") {
+  if (!el.busyOverlay) return;
+  busyDepth += 1;
+  if (el.busyTitle) el.busyTitle.textContent = title;
+  if (el.busyMessage) el.busyMessage.textContent = message;
+  el.busyOverlay.hidden = false;
+}
+
+function hideBusy() {
+  busyDepth = Math.max(0, busyDepth - 1);
+  if (busyDepth > 0) return;
+  if (el.busyOverlay) el.busyOverlay.hidden = true;
+}
+
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...options,
-    headers,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    if (response.status === 401) showLogin();
-    throw new Error(data.error || (data.errors || []).join(" ") || "Falha na requisicao.");
+  const method = String(options.method || "GET").toUpperCase();
+  const shouldShowBusy = options.busy !== false && ["POST", "PUT", "PATCH", "DELETE"].includes(method) && busyDepth === 0;
+  if (shouldShowBusy) showBusy(options.busyTitle || "Processando", options.busyMessage || "Aguarde, o sistema está operando.");
+  try {
+    const response = await fetch(path, {
+      credentials: "same-origin",
+      ...options,
+      headers,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) showLogin();
+      const error = new Error(data.error || (data.errors || []).join(" ") || "Falha na requisicao.");
+      Object.assign(error, data, { status: response.status });
+      throw error;
+    }
+    return data;
+  } finally {
+    if (shouldShowBusy) hideBusy();
   }
-  return data;
 }
 
 function canManage() {
@@ -271,6 +409,14 @@ function hasPermission(permission) {
 
 function isAdminUser() {
   return hasPermission("manage_users");
+}
+
+function canUseSimoneException(item) {
+  return isAdminUser() && Number(item?.prestador_id || item?.id || 0) === simoneExceptionPrestadorId;
+}
+
+function nfValidatedOrSimoneException(item) {
+  return item?.nf_status === "validada" || canUseSimoneException(item);
 }
 
 function canCloseFolha() {
@@ -330,12 +476,14 @@ function defaultViewForUser() {
 function showLogin(message = "") {
   el.loginScreen.classList.add("active");
   document.body.classList.add("auth-locked");
+  if (el.loginFirstAccess) el.loginFirstAccess.hidden = true;
   el.loginMessage.textContent = message;
 }
 
 function hideLogin() {
   el.loginScreen.classList.remove("active");
   document.body.classList.remove("auth-locked");
+  if (el.loginFirstAccess) el.loginFirstAccess.hidden = true;
   el.loginMessage.textContent = "";
 }
 
@@ -345,6 +493,7 @@ function applyAuthUi() {
   document.querySelector(".settings-button").hidden = !canAccessSettings();
   el.newPrestador.hidden = !hasPermission("edit_prestadores");
   el.newAdiantamento.hidden = !hasPermission("manage_adiantamentos");
+  el.newRescisao.hidden = !hasPermission("manage_rescisoes");
   document.querySelector('.nav-item[data-view="dashboard"]').hidden = !canViewFolhas();
   document.querySelector('.nav-item[data-view="prestadores"]').hidden = !canViewPrestadores();
   document.querySelector('.nav-item[data-view="adiantamentos"]').hidden = !hasPermission("manage_adiantamentos");
@@ -390,7 +539,7 @@ function renderConfigHub() {
       id: "cadastrosPanel",
       permission: "manage_cadastros",
       title: "Cadastros auxiliares",
-      detail: "Categorias, departamentos, funções, projetos e unidades",
+      detail: "Clientes, categorias, departamentos, funções e projetos",
     },
   ].filter((section) => hasPermission(section.permission));
 
@@ -480,6 +629,22 @@ function closeAdiantamentoModal() {
   document.body.classList.remove("modal-open");
 }
 
+function openRescisaoModal() {
+  el.rescisaoModal.classList.add("active");
+  el.rescisaoModal.setAttribute("aria-hidden", "false");
+  el.rescisaoBackdrop.classList.add("active");
+  el.rescisaoBackdrop.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeRescisaoModal() {
+  el.rescisaoModal.classList.remove("active");
+  el.rescisaoModal.setAttribute("aria-hidden", "true");
+  el.rescisaoBackdrop.classList.remove("active");
+  el.rescisaoBackdrop.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+}
+
 function openCompositionModal(title, html) {
   el.compositionTitle.textContent = title;
   el.compositionBody.innerHTML = html;
@@ -505,11 +670,28 @@ function resetAdiantamentoForm() {
   clearPrestadorPicker("adiantamento");
 }
 
+function resetRescisaoForm() {
+  el.rescisaoForm.reset();
+  el.rescisaoForm.elements.data_rescisao.value = todayIso();
+  el.rescisaoForm.elements.data_aviso.value = todayIso();
+  el.rescisaoForm.elements.tipo_rescisao.value = "empresa";
+  el.rescisaoForm.elements.descontos_manual.value = 0;
+  clearPrestadorPicker("rescisao");
+  el.rescisaoPreview.textContent = "Informe prestador e data para calcular.";
+}
+
 function resetPrestadorForm() {
   el.prestadorForm.reset();
   el.prestadorForm.elements.id.value = "";
   el.prestadorForm.elements.ativo.checked = true;
   el.prestadorForm.elements.cargo_nivel.value = "operacao";
+  el.prestadorForm.elements.precificacao_tipo.value = "mensal";
+  el.prestadorForm.elements.valor_dia.value = 0;
+  el.prestadorForm.elements.rescisao_multa_empresa_percentual.value = 0;
+  el.prestadorForm.elements.rescisao_multa_prestador_percentual.value = 0;
+  renderPrestadorProjetoDepartamentoSelects();
+  if (el.clearPrestador) el.clearPrestador.hidden = false;
+  updatePrestadorPricingFields();
 }
 
 function renderRows(table, columns, rows, empty = "Sem registros.") {
@@ -529,24 +711,36 @@ function renderRows(table, columns, rows, empty = "Sem registros.") {
 
 function renderPrestadores() {
   const term = el.searchPrestador.value.toLowerCase();
-  const rows = state.prestadores.filter((p) => {
-    return [p.nome, p.razao_social, p.funcao, p.unidade_nome, p.departamento, p.projeto, p.cargo_nivel].some((value) => String(value || "").toLowerCase().includes(term));
-  });
+  const statusFilter = el.prestadorStatusFilter?.value || state.prestadorStatusFilter || "todos";
+  const rows = state.prestadores
+    .filter((p) => {
+      if (statusFilter === "ativos" && !p.ativo) return false;
+      if (statusFilter === "inativos" && p.ativo) return false;
+      return [p.nome, p.razao_social, p.funcao, p.unidade_nome, p.departamento, p.projeto, p.cargo_nivel].some((value) => String(value || "").toLowerCase().includes(term));
+    })
+    .sort((a, b) => String(a.nome || a.razao_social || "").localeCompare(String(b.nome || b.razao_social || ""), "pt-BR", { sensitivity: "base" }));
 
   renderRows(el.prestadoresTable, [
-    { label: "Prestador", render: (p) => `<strong>${p.razao_social}</strong><br><small>${p.nome}</small>` },
-    { label: "Projeto | Unidade", render: (p) => `${p.projeto || ""} | ${p.unidade_nome || ""}<br><small>${p.departamento || ""} | ${p.funcao || ""}</small>` },
+    { label: "Prestador", render: (p) => hasPermission("edit_prestadores")
+      ? `<button type="button" class="link-cell" data-edit="${p.id}"><strong>${escapeHtml(p.nome || p.razao_social || "")}</strong><small>${escapeHtml(p.razao_social || "")}</small></button>`
+      : `<strong>${escapeHtml(p.nome || p.razao_social || "")}</strong><br><small>${escapeHtml(p.razao_social || "")}</small>` },
+    { label: "Projeto | Cliente", render: (p) => `${p.projeto || ""} | ${p.cliente_nome || p.unidade_nome || ""}<br><small>${p.departamento || ""} | ${p.funcao || ""}</small>` },
     { label: "Nível", render: (p) => p.cargo_nivel === "gestao" ? "Gestão" : "Operação" },
-    { label: "Contato", render: (p) => `${p.email || ""}<br><small>${p.telefone || ""}</small>` },
+    { label: "Precificação", render: (p) => isDailyPriced(p) ? `R$/dia<br><small>${sensitiveMoney(p.valor_dia)}</small>` : "R$/mês" },
+    { label: "Admissão", render: (p) => formatDate(p.data_admissao) },
+    { label: "Categoria", render: (p) => p.categoria || "-" },
     { label: "CPF", render: (p) => p.cpf },
     { label: "CNPJ", render: (p) => p.cnpj },
-    { label: "Salario", render: (p) => `<span class="money">${sensitiveMoney(p.salario_contrato)}</span>` },
+    { label: "R$ Contrato", render: (p) => `<span class="money">${sensitiveMoney(p.salario_contrato)}</span>` },
     { label: "Status", render: (p) => p.ativo ? "Ativo" : "Inativo" },
-    { label: "", render: (p) => hasPermission("edit_prestadores") ? `<button data-edit="${p.id}">Editar</button>` : "" },
+    { label: "Conta", render: (p) => `<button type="button" class="doc-icon-button account-button" data-conta-prestador="${p.id}" title="Conta corrente">${iconSvg("ledger")}</button>` },
   ], rows);
 
   el.prestadoresTable.querySelectorAll("[data-edit]").forEach((button) => {
     button.addEventListener("click", () => editPrestador(Number(button.dataset.edit)));
+  });
+  el.prestadoresTable.querySelectorAll("[data-conta-prestador]").forEach((button) => {
+    button.addEventListener("click", () => openPrestadorAccount(button.dataset.contaPrestador).catch((error) => toast(error.message)));
   });
 }
 
@@ -554,8 +748,8 @@ function renderSelects() {
   renderPrestadorPicker("adiantamento");
   renderPrestadorPicker("rescisao");
 
-  el.prestadorForm.elements.unidade_id.innerHTML = state.unidades
-    .map((u) => `<option value="${u.id}">${u.nome}</option>`)
+  el.prestadorForm.elements.cliente_id.innerHTML = state.clientes
+    .map((item) => `<option value="${item.id}">${item.nome}</option>`)
     .join("");
   el.prestadorForm.elements.funcao_id.innerHTML = state.funcoes
     .map((item) => `<option value="${item.id}">${item.nome}</option>`)
@@ -563,15 +757,30 @@ function renderSelects() {
   el.prestadorForm.elements.categoria_id.innerHTML = state.categorias
     .map((item) => `<option value="${item.id}">${item.nome}</option>`)
     .join("");
-  el.prestadorForm.elements.departamento_id.innerHTML = state.departamentos
-    .map((item) => `<option value="${item.id}">${item.nome}</option>`)
-    .join("");
-  el.prestadorForm.elements.projeto_id.innerHTML = state.projetos
-    .map((item) => `<option value="${item.id}">${item.nome}</option>`)
-    .join("");
+  renderPrestadorProjetoDepartamentoSelects();
+}
+
+function renderPrestadorProjetoDepartamentoSelects() {
+  const form = el.prestadorForm;
+  if (!form?.elements.cliente_id || !form?.elements.projeto_id || !form?.elements.departamento_id) return;
+  const clienteId = form.elements.cliente_id.value;
+  const projetoAtual = form.elements.projeto_id.value;
+  const departamentoAtual = form.elements.departamento_id.value;
+  const projetos = state.projetos.filter((item) => !clienteId || String(item.cliente_id) === String(clienteId));
+  form.elements.projeto_id.innerHTML = projetos.map((item) => `<option value="${item.id}">${item.nome}</option>`).join("");
+  if (projetos.some((item) => String(item.id) === String(projetoAtual))) form.elements.projeto_id.value = projetoAtual;
+
+  const projetoId = form.elements.projeto_id.value;
+  const departamentos = state.departamentos.filter((item) => (
+    (!clienteId || String(item.cliente_id) === String(clienteId))
+    && (!projetoId || String(item.projeto_id) === String(projetoId))
+  ));
+  form.elements.departamento_id.innerHTML = departamentos.map((item) => `<option value="${item.id}">${item.nome}</option>`).join("");
+  if (departamentos.some((item) => String(item.id) === String(departamentoAtual))) form.elements.departamento_id.value = departamentoAtual;
 }
 
 const cadastroLabels = {
+  clientes: "Clientes",
   categorias: "Categorias",
   departamentos: "Departamentos",
   funcoes: "Funções",
@@ -580,7 +789,7 @@ const cadastroLabels = {
 };
 
 function renderCadastrosConfig() {
-  const tipos = ["categorias", "departamentos", "funcoes", "projetos", "unidades"];
+  const tipos = ["clientes", "categorias", "departamentos", "funcoes", "projetos"];
   const activeTipo = tipos.includes(state.cadastroTipoAtivo) ? state.cadastroTipoAtivo : "categorias";
   const rows = state.cadastroConfig[activeTipo] || [];
   el.cadastrosConfig.innerHTML = `
@@ -605,28 +814,39 @@ function renderCadastrosConfig() {
           <div class="list-actions">
             <input class="cadastro-search search" data-cadastro-search="${activeTipo}" type="search" placeholder="Filtrar ${cadastroLabels[activeTipo].toLowerCase()}">
             ${activeTipo === "categorias" ? `<button type="button" data-sync-categorias-omie>Sincronizar Omie</button>` : ""}
+            ${activeTipo === "departamentos" ? `<button type="button" data-sync-departamentos-omie>Sincronizar Omie</button>` : ""}
             <button type="button" data-clear-cadastro="${activeTipo}" class="primary">Novo</button>
           </div>
         </div>
         <form class="cadastro-form aux-form" data-cadastro-form="${activeTipo}">
           <input type="hidden" name="id" />
           <label>Nome<input name="nome" placeholder="Nome do cadastro" required /></label>
-          ${activeTipo === "categorias" ? `<label>Código Omie<input name="omie_codigo" placeholder="Opcional" /></label>` : ""}
+          ${activeTipo === "categorias" || activeTipo === "departamentos" ? `<label>Código Omie<input name="omie_codigo" placeholder="Consulta automática se vazio" /></label>` : ""}
+          ${activeTipo === "departamentos" ? `<label>Cliente<select name="cliente_id"><option value="">Sem cliente</option>${(state.cadastroConfig.clientes || []).filter((cliente) => cliente.ativo).map((cliente) => `<option value="${cliente.id}">${cliente.nome}</option>`).join("")}</select></label>` : ""}
+          ${activeTipo === "departamentos" ? `<label>Projeto / Operação<select name="projeto_id"><option value="">Sem projeto</option>${(state.cadastroConfig.projetos || []).filter((projeto) => projeto.ativo).map((projeto) => `<option value="${projeto.id}">${projeto.nome}${projeto.cliente_nome ? ` | ${projeto.cliente_nome}` : ""}</option>`).join("")}</select></label>` : ""}
+          ${activeTipo === "projetos" ? `<label>Cliente<select name="cliente_id"><option value="">Sem cliente</option>${(state.cadastroConfig.clientes || []).filter((cliente) => cliente.ativo).map((cliente) => `<option value="${cliente.id}">${cliente.nome}</option>`).join("")}</select></label>` : ""}
           <label class="check"><input name="ativo" type="checkbox" checked /> Ativo</label>
           <button type="submit" class="primary">Salvar</button>
         </form>
         <div class="table-wrap compact-table aux-table">
           <table>
-            <thead><tr><th>Nome</th>${activeTipo === "categorias" ? "<th>Código Omie</th>" : ""}<th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Nome</th>${activeTipo === "categorias" || activeTipo === "departamentos" ? "<th>Código Omie</th>" : ""}${activeTipo === "departamentos" ? "<th>Cliente</th><th>Projeto / Operação</th>" : ""}${activeTipo === "projetos" ? "<th>Cliente</th>" : ""}<th>Status</th><th></th></tr></thead>
             <tbody>
               ${rows.length ? rows.map((row) => `
                 <tr>
                   <td><strong>${row.nome}</strong></td>
-                  ${activeTipo === "categorias" ? `<td>${row.omie_codigo || "-"}</td>` : ""}
+                  ${activeTipo === "categorias" || activeTipo === "departamentos" ? `<td>${row.omie_codigo || "-"}</td>` : ""}
+                  ${activeTipo === "departamentos" ? `<td>${row.cliente_nome || "-"}</td><td>${row.projeto_nome || "-"}</td>` : ""}
+                  ${activeTipo === "projetos" ? `<td>${row.cliente_nome || "-"}</td>` : ""}
                   <td>${row.ativo ? "Ativo" : "Inativo"}</td>
-                  <td><button type="button" data-edit-cadastro="${activeTipo}" data-id="${row.id}">Editar</button></td>
+                  <td>
+                    <div class="row-actions">
+                      <button type="button" data-edit-cadastro="${activeTipo}" data-id="${row.id}">Editar</button>
+                      ${activeTipo === "projetos" && row.ativo ? `<button type="button" class="danger" data-delete-cadastro="${activeTipo}" data-id="${row.id}">Excluir</button>` : ""}
+                    </div>
+                  </td>
                 </tr>
-              `).join("") : `<tr><td colspan="${activeTipo === "categorias" ? 4 : 3}">Sem registros.</td></tr>`}
+              `).join("") : `<tr><td colspan="${activeTipo === "departamentos" ? 6 : (activeTipo === "categorias" || activeTipo === "projetos" ? 4 : 3)}">Sem registros.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -649,8 +869,14 @@ function renderCadastrosConfig() {
   el.cadastrosConfig.querySelectorAll("[data-edit-cadastro]").forEach((button) => {
     button.addEventListener("click", () => editCadastroConfig(button.dataset.editCadastro, Number(button.dataset.id)));
   });
+  el.cadastrosConfig.querySelectorAll("[data-delete-cadastro]").forEach((button) => {
+    button.addEventListener("click", () => deleteCadastroConfig(button.dataset.deleteCadastro, Number(button.dataset.id)).catch((error) => toast(error.message)));
+  });
   el.cadastrosConfig.querySelectorAll("[data-sync-categorias-omie]").forEach((button) => {
     button.addEventListener("click", () => syncCategoriasOmie().catch((error) => toast(error.message)));
+  });
+  el.cadastrosConfig.querySelectorAll("[data-sync-departamentos-omie]").forEach((button) => {
+    button.addEventListener("click", () => syncDepartamentosOmie().catch((error) => toast(error.message)));
   });
   el.cadastrosConfig.querySelectorAll("[data-cadastro-search]").forEach((input) => {
     input.addEventListener("input", () => filterCadastroRows(input));
@@ -668,11 +894,17 @@ function prestadorPickerText(prestador) {
   ].filter(Boolean).join(" ");
 }
 
+function prestadorPickerLabel(prestador) {
+  return `${prestador.razao_social || prestador.nome || ""} | ${prestador.nome || prestador.razao_social || ""}`;
+}
+
 function clearPrestadorPicker(kind) {
   const form = kind === "adiantamento" ? el.adiantamentoForm : el.rescisaoForm;
   const search = document.querySelector(`[data-prestador-search="${kind}"]`);
+  const results = document.querySelector(`[data-prestador-results="${kind}"]`);
   form.elements.prestador_id.value = "";
   if (search) search.value = "";
+  if (results) results.hidden = false;
   renderPrestadorPicker(kind);
 }
 
@@ -682,8 +914,12 @@ function selectPrestador(kind, id) {
   const prestador = state.prestadores.find((item) => Number(item.id) === Number(id));
   if (!prestador) return;
   form.elements.prestador_id.value = prestador.id;
-  if (search) search.value = `${prestador.razao_social} | ${prestador.nome}`;
-  renderPrestadorPicker(kind);
+  if (search) search.value = prestadorPickerLabel(prestador);
+  const results = document.querySelector(`[data-prestador-results="${kind}"]`);
+  if (results) {
+    results.innerHTML = "";
+    results.hidden = true;
+  }
 }
 
 function renderPrestadorPicker(kind) {
@@ -691,12 +927,19 @@ function renderPrestadorPicker(kind) {
   const search = document.querySelector(`[data-prestador-search="${kind}"]`);
   const results = document.querySelector(`[data-prestador-results="${kind}"]`);
   if (!form || !search || !results) return;
+  results.hidden = false;
   const selectedId = Number(form.elements.prestador_id.value || 0);
   const term = normalizeText(search.value);
+  const selected = state.prestadores.find((prestador) => Number(prestador.id) === selectedId);
+  if (selected && term === normalizeText(prestadorPickerLabel(selected))) {
+    results.innerHTML = "";
+    results.hidden = true;
+    return;
+  }
   const matches = state.prestadores
     .filter((prestador) => prestador.ativo || Number(prestador.id) === selectedId)
     .filter((prestador) => !term || normalizeText(prestadorPickerText(prestador)).includes(term))
-    .slice(0, 30);
+    .sort((a, b) => String(a.nome || a.razao_social || "").localeCompare(String(b.nome || b.razao_social || ""), "pt-BR", { sensitivity: "base" }));
   results.innerHTML = matches.length
     ? matches.map((prestador) => `
       <button type="button" class="prestador-picker-option ${Number(prestador.id) === selectedId ? "active" : ""}" data-select-prestador="${kind}" data-id="${prestador.id}">
@@ -724,6 +967,8 @@ function clearCadastroForm(tipo) {
   form.reset();
   form.elements.id.value = "";
   if (form.elements.omie_codigo) form.elements.omie_codigo.value = "";
+  if (form.elements.cliente_id) form.elements.cliente_id.value = "";
+  if (form.elements.projeto_id) form.elements.projeto_id.value = "";
   form.elements.ativo.checked = true;
 }
 
@@ -734,6 +979,8 @@ function editCadastroConfig(tipo, id) {
   form.elements.id.value = item.id;
   form.elements.nome.value = item.nome;
   if (form.elements.omie_codigo) form.elements.omie_codigo.value = item.omie_codigo || "";
+  if (form.elements.cliente_id) form.elements.cliente_id.value = item.cliente_id || "";
+  if (form.elements.projeto_id) form.elements.projeto_id.value = item.projeto_id || "";
   form.elements.ativo.checked = Boolean(item.ativo);
 }
 
@@ -750,38 +997,125 @@ async function saveCadastroConfig(event) {
   data.ativo = form.elements.ativo.checked;
   const id = data.id;
   delete data.id;
-  await api(id ? `/api/cadastros/${tipo}/${id}` : `/api/cadastros/${tipo}`, {
-    method: id ? "PUT" : "POST",
-    body: JSON.stringify(data),
-  });
-  clearCadastroForm(tipo);
-  toast("Cadastro salvo.");
-  await loadAll();
-  if (document.querySelector("#configuracoes").classList.contains("active")) await loadCadastrosConfig();
+  showBusy(id ? "Atualizando cadastro" : "Criando cadastro", "Salvando configuração e atualizando listas.");
+  try {
+    await api(id ? `/api/cadastros/${tipo}/${id}` : `/api/cadastros/${tipo}`, {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(data),
+    });
+    clearCadastroForm(tipo);
+    toast("Cadastro salvo.");
+    await loadAll();
+    if (document.querySelector("#configuracoes").classList.contains("active")) await loadCadastrosConfig();
+  } finally {
+    hideBusy();
+  }
+}
+
+async function deleteCadastroConfig(tipo, id) {
+  const item = (state.cadastroConfig[tipo] || []).find((row) => Number(row.id) === Number(id));
+  if (!item) return;
+  if (!confirm(`Excluir o projeto "${item.nome}"? Ele ficará inativo para preservar históricos.`)) return;
+  showBusy("Excluindo cadastro", "Atualizando o status e recarregando listas.");
+  try {
+    await api(`/api/cadastros/${tipo}/${id}`, { method: "DELETE" });
+    toast("Projeto excluido.");
+    clearCadastroForm(tipo);
+    await loadAll();
+    if (document.querySelector("#configuracoes").classList.contains("active")) await loadCadastrosConfig();
+  } finally {
+    hideBusy();
+  }
 }
 
 async function syncCategoriasOmie() {
-  const result = await api("/api/cadastros/categorias/sincronizar-omie", { method: "POST", body: "{}" });
-  const naoEncontradas = result.naoEncontradas?.length || 0;
-  toast(`Categorias Omie: ${result.atualizadas.length} atualizada(s), ${naoEncontradas} nao encontrada(s).`);
-  await loadAll();
-  if (document.querySelector("#configuracoes").classList.contains("active")) await loadCadastrosConfig();
+  showBusy("Sincronizando categorias", "Consultando as categorias cadastradas na Omie.");
+  try {
+    const result = await api("/api/cadastros/categorias/sincronizar-omie", { method: "POST", body: "{}" });
+    const naoEncontradas = result.naoEncontradas?.length || 0;
+    toast(`Categorias Omie: ${result.atualizadas.length} atualizada(s), ${naoEncontradas} nao encontrada(s).`);
+    await loadAll();
+    if (document.querySelector("#configuracoes").classList.contains("active")) await loadCadastrosConfig();
+  } finally {
+    hideBusy();
+  }
+}
+
+async function syncDepartamentosOmie() {
+  showBusy("Sincronizando departamentos", "Consultando os departamentos cadastrados na Omie.");
+  try {
+    const result = await api("/api/cadastros/departamentos/sincronizar-omie", { method: "POST", body: "{}" });
+    const naoEncontradas = result.naoEncontradas?.length || 0;
+    toast(`Departamentos sincronizados: ${result.atualizadas?.length || 0} atualizados, ${naoEncontradas} sem correspondencia.`);
+    await loadAll();
+    if (document.querySelector("#configuracoes").classList.contains("active")) await loadCadastrosConfig();
+  } finally {
+    hideBusy();
+  }
 }
 
 function renderUsuarios() {
   if (!isAdminUser()) return;
+  const select = el.usuarioForm.elements.prestador_id;
+  if (select) {
+    select.innerHTML = `<option value="">Sem vínculo PJ</option>${state.prestadores.map((prestador) => `
+      <option value="${prestador.id}">${prestador.razao_social || prestador.nome} | ${prestador.nome || ""} | ${prestador.cpf || prestador.cnpj || ""}</option>
+    `).join("")}`;
+  }
+  document.querySelectorAll("[data-user-filter]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.userFilter === state.usuarioAccessFilter);
+  });
+  const rows = state.usuarios.filter((usuario) => {
+    const scope = usuarioAccessScope(usuario);
+    if (state.usuarioAccessFilter === "geral") return scope === "geral";
+    if (state.usuarioAccessFilter === "reembolso") return scope === "reembolso";
+    return true;
+  });
   renderRows(el.usuariosTable, [
-    { label: "Nome", render: (u) => `<strong>${u.nome}</strong><br><small>${u.email}</small>` },
+    { label: "Nome", render: (u) => `<button type="button" class="link-cell" data-edit-usuario="${u.id}"><strong>${u.nome}</strong><small>${u.email}</small></button>` },
+    { label: "Prestador PJ", render: (u) => u.prestador_id ? `<strong>${u.prestador_razao_social || u.prestador_nome || ""}</strong>` : `<span class="muted">Sem vínculo</span>` },
+    { label: "Acesso", render: (u) => usuarioAccessScope(u) === "reembolso" ? "Somente Reembolso" : "Acesso geral" },
     { label: "Perfil", key: "perfil" },
     { label: "Permissões", render: (u) => `${Object.values(u.permissoes || {}).filter(Boolean).length} acesso(s)` },
-    { label: "Status", render: (u) => u.ativo ? "Ativo" : "Inativo" },
+    { label: "Status", render: (u) => u.primeiro_acesso ? "Primeiro acesso" : (u.ativo ? "Ativo" : "Inativo") },
     { label: "Ultimo login", render: (u) => u.ultimo_login || "" },
-    { label: "", render: (u) => `<button type="button" data-edit-usuario="${u.id}">Editar</button>` },
-  ], state.usuarios);
+    {
+      label: "Ações",
+      render: (u) => `<button type="button" class="small" data-reset-senha="${u.id}" ${Number(u.id) === Number(state.authUser?.id) ? "disabled" : ""}>Resetar senha</button>`
+    },
+  ], rows);
 
   el.usuariosTable.querySelectorAll("[data-edit-usuario]").forEach((button) => {
     button.addEventListener("click", () => editUsuario(Number(button.dataset.editUsuario)));
   });
+  el.usuariosTable.querySelectorAll("[data-reset-senha]").forEach((button) => {
+    button.addEventListener("click", () => resetUsuarioSenha(Number(button.dataset.resetSenha)));
+  });
+}
+
+function usuarioAccessScope(usuario) {
+  if (usuario?.access_scope === "reembolso") return "reembolso";
+  const permissoes = usuario?.permissoes || {};
+  const enabled = Object.entries(permissoes).filter(([, value]) => Boolean(value)).map(([key]) => key);
+  const hasReembolso = enabled.some((key) => key.startsWith("reembolso_"));
+  const hasGeneral = enabled.some((key) => !key.startsWith("reembolso_"));
+  return hasReembolso && !hasGeneral ? "reembolso" : "geral";
+}
+
+function openUsuarioModal(mode = "new") {
+  if (mode === "new") clearUsuarioForm(false);
+  el.usuarioModalTitle.textContent = mode === "edit" ? "Editar usuário" : "Novo usuário";
+  el.usuarioModal.classList.add("active");
+  el.configBackdrop.classList.add("active");
+  document.body.classList.add("modal-open");
+}
+
+function closeUsuarioModal() {
+  el.usuarioModal.classList.remove("active");
+  if (!document.querySelector(".config-panel.active")) {
+    el.configBackdrop.classList.remove("active");
+    document.body.classList.remove("modal-open");
+  }
 }
 
 function clearUsuarioForm() {
@@ -789,6 +1123,7 @@ function clearUsuarioForm() {
   el.usuarioForm.elements.id.value = "";
   el.usuarioForm.elements.ativo.checked = true;
   el.usuarioForm.elements.perfil.value = "consulta";
+  if (el.usuarioForm.elements.prestador_id) el.usuarioForm.elements.prestador_id.value = "";
   renderUsuarioPermissoes(defaultPermissionsByPerfil.consulta);
 }
 
@@ -798,21 +1133,47 @@ function editUsuario(id) {
   el.usuarioForm.elements.id.value = usuario.id;
   el.usuarioForm.elements.nome.value = usuario.nome || "";
   el.usuarioForm.elements.email.value = usuario.email || "";
+  if (el.usuarioForm.elements.prestador_id) el.usuarioForm.elements.prestador_id.value = usuario.prestador_id || "";
   el.usuarioForm.elements.perfil.value = usuario.perfil || "consulta";
   el.usuarioForm.elements.senha.value = "";
   el.usuarioForm.elements.ativo.checked = Boolean(usuario.ativo);
   renderUsuarioPermissoes(usuario.permissoes || {});
+  openUsuarioModal("edit");
 }
 
 function renderUsuarioPermissoes(permissoes = {}) {
   const container = document.querySelector("#usuarioPermissoes");
   if (!container) return;
-  container.innerHTML = permissionLabels.map(([key, label]) => `
-    <label class="check permission-check">
-      <input name="perm_${key}" type="checkbox" ${permissoes[key] ? "checked" : ""}>
-      ${label}
-    </label>
+  container.innerHTML = permissionGroups.map((group) => `
+    <section class="permission-group">
+      <header>
+        <h4>${group.title}</h4>
+        <p>${group.detail}</p>
+      </header>
+      <div class="permission-grid">
+        ${group.keys.map((key) => `
+          <label class="check permission-check">
+            <input name="perm_${key}" type="checkbox" ${permissoes[key] ? "checked" : ""}>
+            ${permissionLabelMap[key] || key}
+          </label>
+        `).join("")}
+      </div>
+    </section>
   `).join("");
+}
+
+async function resetUsuarioSenha(id) {
+  const usuario = state.usuarios.find((item) => Number(item.id) === Number(id));
+  if (!usuario) return;
+  if (!confirm(`Resetar a senha de ${usuario.nome}? No proximo login ele devera cadastrar uma nova senha.`)) return;
+  showBusy("Resetando senha", "Atualizando o acesso do usuário.");
+  try {
+    await api(`/api/auth/users/${id}/reset-password`, { method: "POST", body: "{}" });
+    toast("Senha resetada para primeiro acesso.");
+    await loadUsuarios();
+  } finally {
+    hideBusy();
+  }
 }
 
 function applyDefaultUsuarioPermissoes() {
@@ -855,11 +1216,15 @@ function renderAdiantamentos() {
     { label: "Valor", render: (a) => sensitiveMoney(a.valor_total) },
     { label: "Parcelas", key: "parcelas" },
     { label: "Inicio", key: "competencia_inicial" },
+    { label: "Status", render: (a) => ({ aberto: "Aberto", em_aprovacao: "Em aprovação", aprovado: "Aprovado", reprovado: "Reprovado" })[a.status || "aberto"] || a.status },
+    { label: "Aprovações", render: (a) => renderApprovalMini(a.aprovacoes) },
     { label: "Saldo aberto", render: (a) => `<span class="money">${sensitiveMoney(a.saldo_aberto)}</span>` },
     { label: "", render: (a) => `
       <div class="row-actions">
         <button class="icon-button" data-extrato="${a.id}" title="Ver extrato">...</button>
-        ${hasPermission("manage_adiantamentos") ? `<button class="icon-button danger-button" data-delete-adiantamento="${a.id}" title="Excluir adiantamento">&times;</button>` : ""}
+        ${hasPermission("manage_adiantamentos") && ["aberto", "reprovado"].includes(a.status || "aberto") ? `<button data-adiantamento-request-approval="${a.id}">Enviar aprovação</button>` : ""}
+        ${canApproveFolha() && a.status === "em_aprovacao" && !a.aprovacoes?.approved ? `<button data-adiantamento-approve="${a.id}">Aprovar</button><button data-adiantamento-reject="${a.id}">Reprovar</button>` : ""}
+        ${hasPermission("manage_adiantamentos") && ["aberto", "reprovado"].includes(a.status || "aberto") ? `<button class="icon-button danger-button" data-delete-adiantamento="${a.id}" title="Excluir adiantamento">&times;</button>` : ""}
       </div>
     ` },
   ], rows);
@@ -870,17 +1235,52 @@ function renderAdiantamentos() {
   el.adiantamentosTable.querySelectorAll("[data-delete-adiantamento]").forEach((button) => {
     button.addEventListener("click", () => deleteAdiantamento(button.dataset.deleteAdiantamento).catch((error) => toast(error.message)));
   });
+  el.adiantamentosTable.querySelectorAll("[data-adiantamento-request-approval]").forEach((button) => {
+    button.addEventListener("click", () => enviarAdiantamentoAprovacao(button.dataset.adiantamentoRequestApproval).catch((error) => toast(error.message)));
+  });
+  el.adiantamentosTable.querySelectorAll("[data-adiantamento-approve]").forEach((button) => {
+    button.addEventListener("click", () => aprovarAdiantamento(button.dataset.adiantamentoApprove).catch((error) => toast(error.message)));
+  });
+  el.adiantamentosTable.querySelectorAll("[data-adiantamento-reject]").forEach((button) => {
+    button.addEventListener("click", () => reprovarAdiantamento(button.dataset.adiantamentoReject).catch((error) => toast(error.message)));
+  });
+}
+
+async function enviarAdiantamentoAprovacao(id) {
+  const result = await api(`/api/adiantamentos/${id}/enviar-aprovacao`, { method: "POST", body: "{}" });
+  const enviados = result.enviados?.length || 0;
+  toast(`Adiantamento enviado para aprovação: ${enviados} e-mail(s).`);
+  await loadAll();
+}
+
+async function aprovarAdiantamento(id) {
+  const result = await api(`/api/adiantamentos/${id}/aprovar`, { method: "POST", body: "{}" });
+  toast(result.aprovado ? "Adiantamento aprovado." : `Aprovação registrada: ${result.aprovacoes.count}/${result.aprovacoes.required}.`);
+  await loadAll();
+}
+
+async function reprovarAdiantamento(id) {
+  const motivo = window.prompt("Informe a justificativa da recusa:");
+  if (!motivo || !motivo.trim()) return;
+  await api(`/api/adiantamentos/${id}/reprovar`, { method: "POST", body: JSON.stringify({ motivo }) });
+  toast("Adiantamento reprovado e liberado para ajuste.");
+  await loadAll();
 }
 
 async function deleteAdiantamento(id) {
   const item = state.adiantamentos.find((adiantamento) => Number(adiantamento.id) === Number(id));
   const nome = item?.razao_social || item?.nome || "este adiantamento";
   if (!window.confirm(`Excluir o adiantamento de ${nome}?`)) return;
-  await api(`/api/adiantamentos/${id}`, { method: "DELETE" });
-  toast("Adiantamento excluido.");
-  el.extratoTitulo.textContent = "Selecione um adiantamento";
-  renderRows(el.extratoTable, [], []);
-  await loadAll();
+  showBusy("Excluindo adiantamento", "Removendo o registro e atualizando a tela.");
+  try {
+    await api(`/api/adiantamentos/${id}`, { method: "DELETE" });
+    toast("Adiantamento excluido.");
+    el.extratoTitulo.textContent = "Selecione um adiantamento";
+    renderRows(el.extratoTable, [], []);
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
 }
 
 function renderRescisoes() {
@@ -892,7 +1292,9 @@ function renderRescisoes() {
     { label: "Aprovações", render: (r) => renderApprovalMini(r.aprovacoes) },
     { label: "Próxima etapa", render: (r) => renderRescisaoNextStep(r) },
     { label: "Dias", render: (r) => `${r.dias_trabalhados}/${r.dias_mes}` },
+    { label: "Aviso", render: (r) => `${r.aviso_dias || 0} dias<br><small>${Number(r.aviso_cumprido || 0) ? "Cumprido" : "Não cumprido"}</small>` },
     { label: "Proporcional", render: (r) => sensitiveMoney(r.valor_proporcional) },
+    { label: "Multa", render: (r) => sensitiveMoney(r.valor_multa) },
     { label: "Adiantamentos", render: (r) => sensitiveMoney(r.adiantamentos_abertos) },
     { label: "Total a pagar", render: (r) => `<span class="money">${sensitiveMoney(r.valor_total_pagar)}</span>` },
     { label: "", render: (r) => renderRescisaoActions(r) },
@@ -904,17 +1306,20 @@ function renderRescisoes() {
   el.rescisoesTable.querySelectorAll("[data-rescisao-nf]").forEach((input) => {
     input.addEventListener("change", () => uploadRescisaoNf(input).catch((error) => toast(error.message)));
   });
+  el.rescisoesTable.querySelectorAll("[data-view-rescisao-nf]").forEach((button) => {
+    button.addEventListener("click", () => openNfViewer(button.dataset.viewRescisaoNf, button.dataset.name || "NF"));
+  });
   el.rescisoesTable.querySelectorAll("[data-rescisao-approve]").forEach((button) => {
     button.addEventListener("click", () => aprovarRescisao(button.dataset.rescisaoApprove).catch((error) => toast(error.message)));
+  });
+  el.rescisoesTable.querySelectorAll("[data-rescisao-reject]").forEach((button) => {
+    button.addEventListener("click", () => reprovarRescisao(button.dataset.rescisaoReject).catch((error) => toast(error.message)));
   });
   el.rescisoesTable.querySelectorAll("[data-rescisao-finalize]").forEach((button) => {
     button.addEventListener("click", () => finalizarRescisao(button.dataset.rescisaoFinalize).catch((error) => toast(error.message)));
   });
   el.rescisoesTable.querySelectorAll("[data-rescisao-omie]").forEach((button) => {
     button.addEventListener("click", () => integrarRescisaoOmie(button.dataset.rescisaoOmie).catch((error) => toast(error.message)));
-  });
-  el.rescisoesTable.querySelectorAll("[data-rescisao-email]").forEach((button) => {
-    button.addEventListener("click", () => notificarRescisaoNf(button.dataset.rescisaoEmail).catch((error) => toast(error.message)));
   });
   el.rescisoesTable.querySelectorAll("[data-rescisao-request-approval]").forEach((button) => {
     button.addEventListener("click", () => enviarRescisaoAprovacao(button.dataset.rescisaoRequestApproval).catch((error) => toast(error.message)));
@@ -934,6 +1339,7 @@ function renderTextStatusRescisao(status) {
   const labels = {
     aguardando_nf: "Aguardando NF",
     em_aprovacao: "Em aprovação",
+    reprovada: "Reprovada",
     finalizada: "Finalizada",
     integrada_omie: "Omie integrada",
     erro_omie: "Erro Omie",
@@ -944,24 +1350,32 @@ function renderTextStatusRescisao(status) {
 function renderRescisaoNf(rescisao) {
   const status = rescisao.nf_status || "pendente";
   const label = status === "validada" ? "Validada" : status === "divergente" ? "Divergente" : "Pendente";
+  const className = status === "validada" ? "ok" : "warn";
+  const name = escapeHtml(rescisao.numero_nf || rescisao.nf_original_name || "NF");
+  const statusPill = rescisao.nf_id
+    ? `<button type="button" class="status-pill ${className} nf-status-button" data-view-rescisao-nf="${rescisao.nf_id}" data-name="${name}" title="Visualizar NF">${label}</button>`
+    : `<span class="status-pill ${className}">${label}</span>`;
+  if (status === "validada") return statusPill;
   const download = rescisao.nf_id ? `<br><a href="/api/nfs/${rescisao.nf_id}/download" target="_blank">${rescisao.numero_nf || "Baixar NF"}</a>` : "";
   const diff = rescisao.diferenca_nf ? `<br><small>Dif. ${money(rescisao.diferenca_nf)}</small>` : "";
-  return `<span class="status-pill ${status === "validada" ? "ok" : "warn"}">${label}</span>${download}${diff}`;
+  return `${statusPill}${download}${diff}`;
 }
 
 function renderApprovalMini(aprovacoes = {}) {
   const count = aprovacoes.count || 0;
   const required = aprovacoes.required || 0;
   const missing = (aprovacoes.pendentes || []).map((item) => item.nome);
+  const next = aprovacoes.proximo?.nome;
   return aprovacoes.approved
     ? `<span class="approval-pill ok">Aprovada ${count}/${required}</span>`
-    : `<span class="approval-pill">Aprovações ${count}/${required}</span>${missing.length ? `<br><small>${missing.length} pendente(s)</small>` : ""}`;
+    : `<span class="approval-pill">Aprovações ${count}/${required}</span>${next ? `<br><small>Agora: ${escapeHtml(next)}</small>` : missing.length ? `<br><small>${missing.length} pendente(s)</small>` : ""}`;
 }
 
 function renderRescisaoNextStep(rescisao) {
   if (rescisao.status === "integrada_omie") return "Concluída no Omie";
   if (rescisao.status === "finalizada") return canIntegrateOmie() ? "Enviar ao Omie" : "Aguardando Omie";
-  if (rescisao.nf_status !== "validada") return "Aguardando NF validada";
+  if (rescisao.status === "reprovada") return "Ajustar e reenviar";
+  if (!nfValidatedOrSimoneException(rescisao)) return "Aguardando NF validada";
   if (rescisao.status !== "em_aprovacao" && !rescisao.aprovacoes?.approved) return "Enviar para aprovação";
   if (!rescisao.aprovacoes?.approved) {
     const missing = (rescisao.aprovacoes?.pendentes || []).map((item) => item.nome).join(", ");
@@ -971,20 +1385,22 @@ function renderRescisaoNextStep(rescisao) {
 }
 
 function renderRescisaoActions(rescisao) {
-  const canUpload = hasPermission("manage_rescisoes") && !["finalizada", "integrada_omie"].includes(rescisao.status);
-  const canApprove = canApproveFolha() && rescisao.status === "em_aprovacao" && rescisao.nf_status === "validada" && !rescisao.aprovacoes?.approved;
-  const canRequestApproval = hasPermission("manage_rescisoes") && rescisao.nf_status === "validada" && rescisao.status !== "em_aprovacao" && !rescisao.aprovacoes?.approved && !["finalizada", "integrada_omie"].includes(rescisao.status);
-  const canFinalize = hasPermission("manage_rescisoes") && rescisao.nf_status === "validada" && rescisao.aprovacoes?.approved && !["finalizada", "integrada_omie"].includes(rescisao.status);
-  const canOmie = canIntegrateOmie() && rescisao.status === "finalizada" && rescisao.nf_status === "validada" && rescisao.aprovacoes?.approved;
+  const canUpload = hasPermission("manage_rescisoes") && !["em_aprovacao", "finalizada", "integrada_omie"].includes(rescisao.status);
+  const nfOk = nfValidatedOrSimoneException(rescisao);
+  const canApprove = canApproveFolha() && rescisao.status === "em_aprovacao" && nfOk && !rescisao.aprovacoes?.approved;
+  const canReject = canApprove;
+  const canRequestApproval = hasPermission("manage_rescisoes") && nfOk && rescisao.status !== "em_aprovacao" && !rescisao.aprovacoes?.approved && !["finalizada", "integrada_omie"].includes(rescisao.status);
+  const canFinalize = hasPermission("manage_rescisoes") && nfOk && rescisao.aprovacoes?.approved && !["finalizada", "integrada_omie"].includes(rescisao.status);
+  const canOmie = canIntegrateOmie() && rescisao.status === "finalizada" && nfOk && rescisao.aprovacoes?.approved;
   return `
     <div class="row-actions">
       ${canUpload ? `<label class="file-icon-input" title="Anexar NF">NF<input data-rescisao-nf="${rescisao.id}" type="file" accept=".pdf,.xml" /></label>` : ""}
-      ${canUpload ? `<button class="icon-button" data-rescisao-email="${rescisao.id}" title="Solicitar NF por e-mail">@</button>` : ""}
       ${canRequestApproval ? `<button data-rescisao-request-approval="${rescisao.id}">Enviar aprovação</button>` : ""}
       ${canApprove ? `<button data-rescisao-approve="${rescisao.id}" title="Aprovar rescisão">Aprovar</button>` : ""}
+      ${canReject ? `<button data-rescisao-reject="${rescisao.id}" title="Reprovar rescisão">Reprovar</button>` : ""}
       ${canFinalize ? `<button data-rescisao-finalize="${rescisao.id}">Finalizar</button>` : ""}
       ${canOmie ? `<button data-rescisao-omie="${rescisao.id}">Omie</button>` : ""}
-      ${canGenerateReport() ? `<button data-rescisao-report="${rescisao.id}">Relatório</button>` : ""}
+      ${canGenerateReport() ? `<button type="button" class="doc-icon-button" data-rescisao-report="${rescisao.id}" title="Relatório">${iconSvg("report")}</button>` : ""}
     </div>
   `;
 }
@@ -1082,6 +1498,12 @@ function formatDateTime(value) {
   }).format(value ? new Date(value) : new Date());
 }
 
+function formatDate(value) {
+  if (!value) return "-";
+  const date = String(value).includes("T") ? new Date(value) : new Date(`${value}T12:00:00`);
+  return new Intl.DateTimeFormat("pt-BR").format(date);
+}
+
 function showFolhaComposition(id) {
   const item = state.folhaPreview.find((row) => Number(row.prestador_id || row.id) === Number(id));
   if (!item) return;
@@ -1129,7 +1551,7 @@ function showFolhaComposition(id) {
       ])}
       <div class="composition-two-col">
         ${compositionSection("Memória de cálculo", [
-          { label: "Salário contrato", value: item.salario_contrato || item.salario_base, money: true },
+          { label: "R$ Contrato", value: item.salario_contrato || item.salario_base, money: true },
           { label: "Dias trabalhados", value: item.dias_trabalhados },
           { label: "Valor dias", value: item.valor_dias, money: true },
           { label: "Adições", value: item.adicoes, money: true },
@@ -1154,8 +1576,8 @@ function showFolhaComposition(id) {
 function showRescisaoComposition(id) {
   const rescisao = state.rescisoes.find((row) => Number(row.id) === Number(id));
   if (!rescisao) return;
-  const proventos = Number(rescisao.valor_proporcional || 0);
-  const descontos = Number(rescisao.adiantamentos_abertos || 0) + Number(rescisao.descontos_manual || 0);
+  const proventos = Number(rescisao.valor_proporcional || 0) + Math.max(Number(rescisao.valor_multa || 0), 0);
+  const descontos = Number(rescisao.adiantamentos_abertos || 0) + Number(rescisao.descontos_manual || 0) + Math.abs(Math.min(Number(rescisao.valor_multa || 0), 0));
   openCompositionModal("Composição da rescisão", `
     <article class="composition-report">
       <header class="composition-report-head">
@@ -1194,12 +1616,17 @@ function showRescisaoComposition(id) {
           { label: "CPF/CNPJ", value: [rescisao.cpf, rescisao.cnpj].filter(Boolean).join(" / ") },
           { label: "Motivo", value: rescisao.motivo || "" },
         ],
+        [
+          { label: "Aviso", value: `${rescisao.data_aviso || ""} | ${rescisao.aviso_dias || 0} dias | ${Number(rescisao.aviso_cumprido || 0) ? "cumprido" : "não cumprido"}` },
+          { label: "Tipo", value: rescisao.tipo_rescisao === "prestador" ? "Prestador rescinde" : "Empresa rescinde" },
+        ],
       ])}
       <div class="composition-two-col">
         ${compositionSection("Memória de cálculo", [
-          { label: "Salário base", value: rescisao.salario_base, money: true },
+          { label: "R$ Contrato", value: rescisao.salario_base, money: true },
           { label: "Dias trabalhados", value: `${rescisao.dias_trabalhados || 0}/${rescisao.dias_mes || 0}` },
           { label: "Valor proporcional", value: rescisao.valor_proporcional, money: true },
+          { label: `Multa rescisão (${rescisao.multa_percentual || 0}%)`, value: rescisao.valor_multa, money: true, negative: Number(rescisao.valor_multa || 0) < 0 },
           { label: "Adiantamentos em aberto", value: rescisao.adiantamentos_abertos, money: true, negative: true },
           { label: "Descontos manuais", value: rescisao.descontos_manual, money: true, negative: true },
           { label: "Total a pagar", value: rescisao.valor_total_pagar, money: true, total: true },
@@ -1236,8 +1663,11 @@ function renderRescisaoPreview(data) {
     <dl>
       <div><dt>Competencia</dt><dd>${c.competencia}</dd></div>
       <div><dt>Dias trabalhados</dt><dd>${c.dias_trabalhados}/${c.dias_mes}</dd></div>
-      <div><dt>Salario base</dt><dd>${sensitiveMoney(c.salario_base)}</dd></div>
+      <div><dt>R$ Contrato</dt><dd>${sensitiveMoney(c.salario_base)}</dd></div>
       <div><dt>Valor proporcional</dt><dd>${sensitiveMoney(c.valor_proporcional)}</dd></div>
+      <div><dt>Aviso</dt><dd>${c.aviso_dias} dias - ${c.aviso_cumprido ? "cumprido" : "não cumprido"}</dd></div>
+      <div><dt>Dias faltantes</dt><dd>${c.dias_restantes_periodo} dias (${sensitiveMoney(c.valor_dias_restantes)})</dd></div>
+      <div><dt>Multa (${c.multa_percentual}%)</dt><dd>${sensitiveMoney(c.valor_multa)}</dd></div>
       <div><dt>Adiantamentos em aberto</dt><dd>${sensitiveMoney(c.adiantamentos_abertos)}</dd></div>
       <div><dt>Descontos manuais</dt><dd>${sensitiveMoney(c.descontos_manual)}</dd></div>
       <div><dt>Total a pagar</dt><dd class="money">${sensitiveMoney(c.valor_total_pagar)}</dd></div>
@@ -1247,8 +1677,8 @@ function renderRescisaoPreview(data) {
 
 async function calcularRescisao() {
   const data = formData(el.rescisaoForm);
-  if (!data.prestador_id || !data.data_rescisao) {
-    toast("Informe prestador e data da rescisao.");
+  if (!data.prestador_id || !data.data_rescisao || !data.data_aviso) {
+    toast("Informe prestador, data do aviso e data da rescisao.");
     return null;
   }
   const result = await api(`/api/prestadores/${data.prestador_id}/rescisao/calcular`, {
@@ -1355,6 +1785,7 @@ function applyDateLimits() {
   el.adiantamentoForm.elements.data_adiantamento.min = `${temporaryMinAdiantamentoCompetencia()}-01`;
   el.adiantamentoForm.elements.competencia_inicial.min = temporaryMinAdiantamentoCompetencia();
   el.rescisaoForm.elements.data_rescisao.min = `${temporaryMinCompetencia()}-01`;
+  el.rescisaoForm.elements.data_aviso.min = `${temporaryMinCompetencia()}-01`;
 }
 
 function renderFolhas() {
@@ -1416,44 +1847,57 @@ function renderDepartamentoDrill(departamento) {
 }
 
 function renderPreview() {
-  const locked = state.folhaAtual?.status === "fechada"
-    && !state.folhaAtual?.temporaryOpen
-    && !isAdminUser();
+  const locked = state.folhaAtual?.status === "em_aprovacao"
+    || (state.folhaAtual?.status === "fechada" && !state.folhaAtual?.temporaryOpen);
   const readOnly = locked || !canManage();
   const folhaContext = { folhaStatus: state.folhaAtual?.status };
   const rows = filteredFolhaPreview();
   renderRows(el.folhaPreview, [
-    { label: "Prestador", render: (p) => `<button type="button" class="link-button row-main-action" data-compose-folha="${p.prestador_id || p.id}"><strong>${p.razao_social}</strong><small>${p.nome}</small></button>` },
-    { label: "Unidade | Departamento", render: (p) => `${p.unidade_nome || ""} | ${p.departamento || ""}` },
-    { label: "Dias", render: (p) => p.dias_trabalhados },
-    { label: "Salario", render: (p) => sensitiveMoney(p.salario_contrato, folhaContext) },
+    { label: "Prestador", render: (p) => `
+      <div class="row-title-actions">
+        <button type="button" class="link-button row-main-action" data-compose-folha="${p.prestador_id || p.id}"><strong>${p.razao_social}</strong><small>${p.nome}</small></button>
+      </div>
+    ` },
+    { label: "Categoria", render: (p) => p.categoria || "-" },
+    { label: "Dias", render: (p) => isDailyPriced(p) ? payrollEditInput(p, "dias_trabalhados", p.dias_trabalhados || 0, readOnly, "number", "days") : p.dias_trabalhados },
+    { label: "Base", render: (p) => isDailyPriced(p) ? `${sensitiveMoney(p.valor_dia, folhaContext)}<br><small>por dia</small>` : sensitiveMoney(p.salario_contrato, folhaContext) },
     { label: "Valor dias", render: (p) => sensitiveMoney(p.valor_dias, folhaContext) },
-    { label: "Adicoes", render: (p) => `<input class="money-input" ${readOnly ? "disabled" : ""} data-field="adicoes" data-id="${p.prestador_id || p.id}" type="number" step="0.01" value="${decimalValue(p.adicoes)}">` },
-    { label: "Bonus", render: (p) => `<input class="money-input" ${readOnly ? "disabled" : ""} data-field="bonus" data-id="${p.prestador_id || p.id}" type="number" step="0.01" value="${decimalValue(p.bonus)}">` },
-    { label: "Desc.", render: (p) => `<input class="money-input" ${readOnly ? "disabled" : ""} data-field="descontos_manual" data-id="${p.prestador_id || p.id}" type="number" step="0.01" value="${decimalValue(p.descontos_manual)}">` },
+    { label: "Adicoes", render: (p) => payrollEditInput(p, "adicoes", decimalValue(p.adicoes), readOnly, "number") },
+    { label: "Bonus", render: (p) => payrollEditInput(p, "bonus", decimalValue(p.bonus), readOnly, "number") },
+    { label: "Desc.", render: (p) => payrollEditInput(p, "descontos_manual", decimalValue(p.descontos_manual), readOnly, "number") },
     { label: "Adiant.", render: (p) => sensitiveMoney(p.desconto_adiantamentos, folhaContext) },
     { label: "Valor total a pagar", render: (p) => `<span class="money">${sensitiveMoney(p.liquido_pagar, folhaContext)}</span>` },
-    { label: "R$ NF emitida", render: (p) => `<input class="money-input" ${readOnly ? "disabled" : ""} data-field="valor_nf_emitida" data-id="${p.prestador_id || p.id}" type="number" step="0.01" value="${decimalValue(p.valor_nf_emitida)}">` },
+    { label: "R$ NF emitida", render: (p) => {
+      const nfLocked = readOnly || p.nf_status === "validada";
+      return nfLocked
+        ? `<span class="money">${sensitiveMoney(p.valor_nf_emitida, folhaContext)}</span>`
+        : payrollEditInput(p, "valor_nf_emitida", decimalValue(p.valor_nf_emitida), false, "number", "money");
+    } },
     { label: "Dif. NF", render: (p) => sensitiveMoney(p.diferenca_nf, folhaContext) },
-    { label: "N NF", render: (p) => `<input class="nf-input" ${readOnly ? "disabled" : ""} data-field="numero_nf" data-id="${p.prestador_id || p.id}" value="${p.numero_nf || ""}">` },
+    { label: "N NF", render: (p) => payrollEditInput(p, "numero_nf", p.numero_nf || "", readOnly || p.nf_status === "validada") },
     {
       label: "NF",
       render: (p) => {
         const id = p.prestador_id || p.id;
-        const status = p.nf_status ? `<small>${p.nf_status}</small>` : "";
-        const download = p.nf_id ? `<a href="/api/nfs/${p.nf_id}/download" target="_blank">Baixar</a>` : "";
         const canDeleteNf = p.nf_id && !readOnly && state.folhaAtual?.status !== "fechada" && p.omie_status !== "integrado";
+        const nfTooltip = nfStatusTooltip(p);
         return `
-          <label class="nf-upload-button" title="Anexar NF">
-            <span>&uarr;</span>
+          <div class="nf-actions">
+          <span class="nf-status-dot ${nfStatusClass(p.nf_status)}" title="${escapeHtml(nfTooltip)}" aria-label="${escapeHtml(nfTooltip)}">
+            ${iconSvg(nfStatusIcon(p.nf_status))}
+          </span>
+          <label class="nf-upload-button doc-icon-button" title="Anexar NF">
+            ${iconSvg("upload")}
             <input class="nf-file-input" ${readOnly ? "disabled" : ""} data-nf-upload="${id}" type="file" accept=".xml,.pdf">
           </label>
-          ${status} ${download}
+          ${p.nf_id ? `<button type="button" class="doc-icon-button" data-view-nf="${p.nf_id}" data-name="${escapeHtml(p.nf_original_name || p.numero_nf || "NF")}" title="Visualizar NF">${iconSvg("eye")}</button>` : ""}
+          ${p.nf_id ? `<a class="doc-icon-button" href="/api/nfs/${p.nf_id}/download" target="_blank" title="Baixar NF">${iconSvg("download")}</a>` : ""}
           ${canDeleteNf ? `<button type="button" class="icon-button danger-button" data-delete-nf="${p.nf_id}" data-id="${id}" title="Excluir NF">&times;</button>` : ""}
+          </div>
         `;
       },
     },
-    { label: "Omie", render: (p) => p.omie_status || "-" },
+    { label: "Omie", render: (p) => renderOmieStatus(p.omie_status) },
   ], rows);
 
   el.folhaPreview.querySelectorAll("input").forEach((input) => {
@@ -1463,6 +1907,7 @@ function renderPreview() {
       item[input.dataset.field] = input.type === "number" ? Number(input.value || 0) : input.value;
       if (input.type === "number") input.value = decimalValue(input.value);
       calculatePreview();
+      scheduleFolhaDraftSave();
     });
   });
   el.folhaPreview.querySelectorAll("[data-nf-upload]").forEach((input) => {
@@ -1471,10 +1916,152 @@ function renderPreview() {
   el.folhaPreview.querySelectorAll("[data-delete-nf]").forEach((button) => {
     button.addEventListener("click", () => deleteNf(button.dataset.deleteNf, button.dataset.id).catch((error) => toast(error.message)));
   });
+  el.folhaPreview.querySelectorAll("[data-view-nf]").forEach((button) => {
+    button.addEventListener("click", () => openNfViewer(button.dataset.viewNf, button.dataset.name));
+  });
   el.folhaPreview.querySelectorAll("[data-compose-folha]").forEach((button) => {
     button.addEventListener("click", () => showFolhaComposition(button.dataset.composeFolha));
   });
   renderTotals();
+  renderFolhaLotes();
+}
+
+function payrollEditInput(item, field, value, disabled = false, type = "text", variant = "") {
+  if (disabled) {
+    const display = type === "number"
+      ? variant === "days"
+        ? String(Number(value || 0))
+        : Number(value || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : value || "-";
+    return `<span class="payroll-readonly ${variant || ""}">${escapeHtml(display)}</span>`;
+  }
+  const id = item.prestador_id || item.id;
+  const numberAttrs = type === "number" ? `type="number" inputmode="${variant === "days" ? "numeric" : "decimal"}" step="${variant === "days" ? "1" : "0.01"}" min="0"` : `type="text"`;
+  const className = type === "number"
+    ? `payroll-edit-input ${variant === "days" ? "days-input" : "money-input"} ${variant}`.trim()
+    : "payroll-edit-input nf-input";
+  const title = disabled ? "Campo bloqueado" : "Campo editável";
+  const input = `<input class="${className}" ${disabled ? "disabled" : ""} data-field="${field}" data-id="${id}" ${numberAttrs} value="${escapeHtml(value)}" title="${title}">`;
+  return variant === "money" ? `<span class="currency-edit"><span>R$</span>${input}</span>` : input;
+}
+
+function iconSvg(name) {
+  const icons = {
+    upload: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 10l5-5 5 5M5 19h14"/></svg>`,
+    download: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v11M7 11l5 5 5-5M5 19h14"/></svg>`,
+    eye: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><path d="M12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/></svg>`,
+    check: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
+    warn: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 22 20H2L12 3z"/><path d="M12 9v5M12 17h.01"/></svg>`,
+    error: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
+    clock: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v6l4 2"/><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>`,
+    ledger: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h16"/><path d="M8 3v18M16 3v18"/></svg>`,
+    report: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/><path d="M14 3v5h5M9 13h6M9 17h6M9 9h2"/></svg>`,
+  };
+  return icons[name] || icons.clock;
+}
+
+function accountMoney(value, canView = true) {
+  return canView && value !== null && value !== undefined ? money(value) : "Restrito";
+}
+
+async function openPrestadorAccount(prestadorId) {
+  const data = await api(`/api/prestadores/${prestadorId}/conta-corrente`);
+  const prestador = data.prestador || {};
+  const resumo = data.resumo || {};
+  const movimentos = data.movimentos || [];
+  openCompositionModal("Conta corrente do prestador", `
+    <article class="account-report">
+      <header class="account-head">
+        <div>
+          <small>Conta corrente PJ</small>
+          <h3>${escapeHtml(prestador.razao_social || prestador.nome || "")}</h3>
+          <span>${escapeHtml([prestador.nome, prestador.cnpj].filter(Boolean).join(" | "))}</span>
+        </div>
+        <div>
+          <small>Lotação</small>
+          <strong>${escapeHtml([prestador.projeto, prestador.departamento, prestador.unidade_nome].filter(Boolean).join(" | ") || "-")}</strong>
+        </div>
+      </header>
+      <section class="account-summary">
+        <article><span>Créditos</span><strong>${accountMoney(resumo.creditos, !resumo.restrito)}</strong></article>
+        <article><span>Débitos</span><strong>${accountMoney(resumo.debitos, !resumo.restrito)}</strong></article>
+        <article><span>Saldo</span><strong>${accountMoney(resumo.saldo, !resumo.restrito)}</strong></article>
+        <article><span>Adiant. aberto</span><strong>${accountMoney(resumo.adiantamentos_abertos, !resumo.restrito)}</strong></article>
+      </section>
+      <div class="account-table-wrap">
+        <table class="account-table">
+          <thead>
+            <tr><th>Data</th><th>Competência</th><th>Tipo</th><th>Movimento</th><th>Documento</th><th>Crédito</th><th>Débito</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            ${movimentos.length ? movimentos.map((item) => `
+              <tr>
+                <td>${escapeHtml(formatDate(item.data))}</td>
+                <td>${escapeHtml(item.competencia || "")}</td>
+                <td>${escapeHtml(item.tipo || "")}</td>
+                <td><strong>${escapeHtml(item.descricao || "")}</strong>${item.detalhe ? `<small>${escapeHtml(item.detalhe)}</small>` : ""}</td>
+                <td>${escapeHtml(item.documento || "")}</td>
+                <td class="num credit">${accountMoney(item.credito, item.can_view_values)}</td>
+                <td class="num debit">${accountMoney(item.debito, item.can_view_values)}</td>
+                <td>${escapeHtml(item.status || "")}</td>
+              </tr>
+            `).join("") : `<tr><td colspan="8">Sem movimentação registrada.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `);
+}
+
+function nfStatusLabel(status) {
+  const labels = {
+    validada: "NF validada",
+    divergente: "NF divergente",
+    erro: "Erro na NF",
+    pendente: "NF pendente",
+  };
+  return labels[status || "pendente"] || status || "NF pendente";
+}
+
+function nfStatusTooltip(item) {
+  const label = nfStatusLabel(item.nf_status);
+  const details = String(item.nf_divergencias || item.nf_erro || item.nf_error || "")
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return details.length ? `${label}\n${details.join("\n")}` : label;
+}
+
+function nfStatusClass(status) {
+  if (status === "validada") return "ok";
+  if (status === "divergente") return "warn";
+  if (status === "erro") return "error";
+  return "pending";
+}
+
+function nfStatusIcon(status) {
+  if (status === "validada") return "check";
+  if (status === "divergente") return "warn";
+  if (status === "erro") return "error";
+  return "clock";
+}
+
+function renderOmieStatus(status) {
+  const value = status || "pendente";
+  const config = value === "integrado"
+    ? { className: "ok", icon: "check", label: "OK" }
+    : value === "erro"
+      ? { className: "error", icon: "error", label: "Erro" }
+      : { className: "pending", icon: "clock", label: "Pendente" };
+  return `<span class="omie-status-dot ${config.className}" title="Omie: ${config.label}">${iconSvg(config.icon)}<small>${config.label}</small></span>`;
+}
+
+function openNfViewer(nfId, name = "NF") {
+  openCompositionModal(`Visualizar NF - ${name}`, `
+    <div class="nf-viewer">
+      <iframe src="/api/nfs/${encodeURIComponent(nfId)}/view" title="Visualização da NF"></iframe>
+    </div>
+  `);
 }
 
 function filteredFolhaPreview() {
@@ -1486,6 +2073,7 @@ function filteredFolhaPreview() {
         item.nome,
         item.cnpj,
         item.cpf,
+        item.categoria,
         item.unidade_nome,
         item.departamento,
         item.numero_nf,
@@ -1493,6 +2081,7 @@ function filteredFolhaPreview() {
       ].join(" "));
       if (!haystack.includes(search)) return false;
     }
+    if (state.folhaFilters.categoria && normalizeText(item.categoria || "") !== state.folhaFilters.categoria) return false;
     if (state.folhaFilters.nf) {
       const nfStatus = item.nf_status || "pendente";
       if (nfStatus !== state.folhaFilters.nf) return false;
@@ -1504,20 +2093,25 @@ function filteredFolhaPreview() {
     if (state.folhaFilters.diff === "com_diferenca" && Math.abs(Number(item.diferenca_nf || 0)) <= 0.01) return false;
     if (state.folhaFilters.diff === "sem_diferenca" && Math.abs(Number(item.diferenca_nf || 0)) > 0.01) return false;
     return true;
-  });
+  }).sort((a, b) => String(a.nome || a.razao_social || "").localeCompare(String(b.nome || b.razao_social || ""), "pt-BR", { sensitivity: "base" }));
 }
 
 function calculatePreview() {
   const competencia = el.folhaForm.elements.competencia.value;
   const diasMes = daysInCompetencia(competencia);
   el.diasMesAuto.textContent = diasMes;
+  const isSnapshotLocked = ["em_aprovacao", "fechada"].includes(state.folhaAtual?.status) && !state.folhaAtual?.temporaryOpen;
+  if (isSnapshotLocked) {
+    renderPreview();
+    return;
+  }
   state.folhaPreview = state.folhaPreview.map((p) => {
-    const dias = workedDaysForItem(p, competencia);
+    const dias = isDailyPriced(p) ? Number(p.dias_trabalhados || 0) : workedDaysForItem(p, competencia);
     if (!canSeeSensitiveValues({ folhaStatus: state.folhaAtual?.status })) {
       return { ...p, dias_trabalhados: dias };
     }
     const salario = Number(p.salario_contrato || p.salario_base || 0);
-    const valorDias = Number(((salario / payrollBaseDays()) * dias).toFixed(2));
+    const valorDias = folhaValorDias(p, dias);
     const previsto = Number((valorDias + Number(p.adicoes || 0) + Number(p.bonus || 0)).toFixed(2));
     const liquido = Number((previsto - Number(p.descontos_manual || 0) - Number(p.desconto_adiantamentos || 0)).toFixed(2));
     const nfEmitida = Number(p.valor_nf_emitida || 0);
@@ -1563,33 +2157,63 @@ function renderTotals() {
   `;
 }
 
+function renderFolhaLotes() {
+  if (!el.folhaLotes) return;
+  const lotes = state.folhaLotes || [];
+  if (!lotes.length) {
+    el.folhaLotes.innerHTML = "";
+    return;
+  }
+  el.folhaLotes.innerHTML = lotes.map((lote) => {
+    const statusLabel = {
+      em_aprovacao: "Em aprovação",
+      reprovado: "Reprovado",
+      fechado: "Fechado",
+      integrado_omie: "Integrado Omie",
+    }[lote.status] || lote.status;
+    return `
+      <article class="lote-chip">
+        <span>${escapeHtml(lote.label || `Lote ${lote.numero}`)}</span>
+        <strong>${money(lote.total)}</strong>
+        <small>${escapeHtml(statusLabel)} | ${Number(lote.itens || 0)} item(ns)</small>
+      </article>
+    `;
+  }).join("");
+}
+
 async function loadFolha(competencia = el.folhaForm.elements.competencia.value) {
   const data = await api(`/api/folhas/${competencia}`);
   state.folhaAtual = data.folha;
   state.folhaAtual.aprovacoes = data.aprovacoes;
   state.folhaPreview = data.itens;
+  state.folhaLotes = data.lotes || [];
+  state.folhaDraftDirty = false;
+  renderFolhaCategoriaFilter();
   const folhaFechada = data.folha.status === "fechada" && !data.folha.temporaryOpen;
   const folhaIntegradaOmie = folhaFechada
     && state.folhaPreview.length > 0
     && state.folhaPreview.every((item) => item.omie_status === "integrado");
+  const loteFechadoPendenteOmie = state.folhaLotes.some((lote) => lote.status === "fechado");
   const usuarioOperacional = state.authUser?.perfil === "operacional";
   el.competenciaAtual.textContent = data.folha.competencia;
   el.diasMesAuto.textContent = data.folha.dias_mes;
-  el.folhaStatus.textContent = data.folha.status === "aberta" ? "Aberto" : "Fechado";
+  el.folhaStatus.textContent = ({ aberta: "Aberto", em_aprovacao: "Em aprovação", reprovada: "Reprovada", fechada: "Fechado" })[data.folha.status] || data.folha.status;
   el.folhaHint.textContent = "";
-  document.querySelector('button[form="folhaForm"]').hidden = data.folha.status === "fechada" && !data.folha.temporaryOpen;
+  document.querySelector('button[form="folhaForm"]').hidden = data.folha.status !== "aberta" && !(data.folha.status === "reprovada") && !data.folha.temporaryOpen;
   document.querySelector('button[form="folhaForm"]').textContent = "Fechar folha";
   document.querySelector('button[form="folhaForm"]').disabled = !canCloseFolha() || !data.aprovacoes?.approved;
   el.reabrirFolha.hidden = !(data.folha.status === "fechada" && !data.folha.temporaryOpen && hasPermission("reopen_folhas"));
-  el.aprovarFolha.hidden = usuarioOperacional || folhaIntegradaOmie;
-  el.solicitarNfs.hidden = folhaIntegradaOmie;
-  el.enviarAprovacaoFolha.hidden = folhaIntegradaOmie;
-  el.integrarOmie.hidden = folhaIntegradaOmie;
-  el.aprovarFolha.disabled = !canApproveFolha() || data.folha.status === "fechada";
-  el.solicitarNfs.disabled = data.folha.status === "fechada" || !hasPermission("view_folhas");
-  el.enviarAprovacaoFolha.disabled = data.folha.status === "fechada" || !canManage() || !folhaReadyForApproval();
+  el.aprovarFolha.hidden = usuarioOperacional || folhaIntegradaOmie || data.folha.status !== "em_aprovacao";
+  el.reprovarFolha.hidden = el.aprovarFolha.hidden;
+  el.solicitarNfs.hidden = folhaIntegradaOmie || data.folha.status === "em_aprovacao";
+  el.enviarAprovacaoFolha.hidden = folhaIntegradaOmie || data.folha.status === "em_aprovacao";
+  el.integrarOmie.hidden = folhaIntegradaOmie || (!folhaFechada && !loteFechadoPendenteOmie);
+  el.aprovarFolha.disabled = !canApproveFolha() || data.folha.status !== "em_aprovacao";
+  el.reprovarFolha.disabled = el.aprovarFolha.disabled;
+  el.solicitarNfs.disabled = ["fechada", "em_aprovacao"].includes(data.folha.status) || !hasPermission("view_folhas");
+  el.enviarAprovacaoFolha.disabled = ["fechada", "em_aprovacao"].includes(data.folha.status) || !canManage() || !folhaReadyForApproval();
   el.folhaReport.disabled = !canGenerateReport();
-  el.integrarOmie.disabled = !canIntegrateOmie() || data.folha.status !== "fechada" || !data.aprovacoes?.approved;
+  el.integrarOmie.disabled = !canIntegrateOmie() || (!folhaFechada && !loteFechadoPendenteOmie);
   renderApprovalStatus(data.aprovacoes);
   calculatePreview();
 }
@@ -1599,13 +2223,27 @@ function renderApprovalStatus(aprovacoes = {}) {
   const required = aprovacoes.required || 0;
   const names = (aprovacoes.aprovadores || []).map((item) => `${item.nome}${item.codigo_autenticacao ? ` (${item.codigo_autenticacao})` : ""}`);
   const missing = (aprovacoes.pendentes || []).map((item) => item.nome);
+  const next = aprovacoes.proximo?.nome;
   el.approvalStatus.innerHTML = aprovacoes.approved
     ? `<span class="approval-pill ok">Aprovada ${count}/${required}</span>${names.length ? `<details><summary>Ver aprovações</summary><span>${names.join(", ")}</span></details>` : ""}`
-    : `<span class="approval-pill">Aprovações ${count}/${required}</span>${missing.length ? `<details><summary>${missing.length} pendente(s)</summary><span>${missing.join(", ")}</span></details>` : ""}`;
+    : `<span class="approval-pill">Aprovações ${count}/${required}</span>${next ? `<details><summary>Agora: ${escapeHtml(next)}</summary><span>${missing.join(", ")}</span></details>` : missing.length ? `<details><summary>${missing.length} pendente(s)</summary><span>${missing.join(", ")}</span></details>` : ""}`;
+}
+
+function renderFolhaCategoriaFilter() {
+  if (!el.folhaCategoriaFilter) return;
+  const current = state.folhaFilters.categoria || "";
+  const categorias = [...new Set(state.folhaPreview.map((item) => item.categoria).filter(Boolean))]
+    .sort((a, b) => String(a).localeCompare(String(b), "pt-BR", { sensitivity: "base" }));
+  el.folhaCategoriaFilter.innerHTML = `
+    <option value="">Todas</option>
+    ${categorias.map((categoria) => `<option value="${escapeHtml(normalizeText(categoria))}">${escapeHtml(categoria)}</option>`).join("")}
+  `;
+  el.folhaCategoriaFilter.value = categorias.some((categoria) => normalizeText(categoria) === current) ? current : "";
+  state.folhaFilters.categoria = el.folhaCategoriaFilter.value;
 }
 
 function folhaReadyForApproval() {
-  return state.folhaPreview.length > 0 && state.folhaPreview.every((item) => item.nf_status === "validada");
+  return state.folhaPreview.length > 0 && state.folhaPreview.some((item) => nfValidatedOrSimoneException(item) && Math.abs(Number(item.diferenca_nf || 0)) <= 0.01 && Number(item.liquido_pagar || 0) > 0);
 }
 
 function openFolhaReport() {
@@ -1619,6 +2257,7 @@ function openFolhaReport() {
     folha: state.folhaAtual,
     itens: state.folhaPreview,
     aprovacoes: state.folhaAtual?.aprovacoes || null,
+    lotes: state.folhaLotes || [],
     geradoEm: new Date().toISOString(),
   }));
   window.open(`/folha-relatorio.html?competencia=${encodeURIComponent(competencia)}&key=${encodeURIComponent(reportKey)}`, "_blank");
@@ -1630,21 +2269,46 @@ async function integrarOmie() {
     toast("Abra uma folha fechada antes de integrar.");
     return;
   }
-  if (state.folhaAtual.status !== "fechada") {
-    toast("A Omie recebe somente folhas fechadas.");
+  const loteFechadoPendenteOmie = state.folhaLotes.some((lote) => lote.status === "fechado");
+  if (state.folhaAtual.status !== "fechada" && !loteFechadoPendenteOmie) {
+    toast("A Omie recebe somente folhas ou lotes fechados.");
     return;
   }
   el.integrarOmie.disabled = true;
   el.integrarOmie.textContent = "Integrando...";
+  showBusy("Integrando folha", `Enviando lançamentos da competência ${competencia} para a Omie.`);
   try {
     const result = await api(`/api/folhas/${competencia}/integrar-omie`, { method: "POST", body: "{}" });
     const falhas = result.erros?.length || 0;
     toast(falhas ? `Omie integrada com ${falhas} erro(s).` : `Omie integrada: ${result.integrados.length} lancamento(s).`);
     await loadFolha(competencia);
+  } catch (error) {
+    if (await confirmOmiePrestadorCadastro(error)) {
+      const result = await api(`/api/folhas/${competencia}/integrar-omie`, {
+        method: "POST",
+        body: JSON.stringify({ cadastrar_prestadores_omie: true }),
+      });
+      const falhas = result.erros?.length || 0;
+      toast(falhas ? `Omie integrada com ${falhas} erro(s).` : `Omie integrada: ${result.integrados.length} lancamento(s).`);
+      await loadFolha(competencia);
+      return;
+    }
+    toast(error.message);
+    await loadFolha(competencia);
   } finally {
+    hideBusy();
     el.integrarOmie.disabled = false;
     el.integrarOmie.textContent = "Integrar Omie";
   }
+}
+
+async function confirmOmiePrestadorCadastro(error) {
+  if (error.code !== "OMIE_PRESTADOR_PENDENTE") return false;
+  const prestadores = error.prestadores || [];
+  const lista = prestadores
+    .map((prestador) => `- ${prestador.razao_social || prestador.nome || "Prestador"}${prestador.cnpj ? ` (${prestador.cnpj})` : ""}`)
+    .join("\n");
+  return window.confirm(`${error.message}\n\n${lista}\n\nDeseja cadastrar este prestador como fornecedor PJ no Omie e continuar?`);
 }
 
 async function aprovarFolha() {
@@ -1653,13 +2317,39 @@ async function aprovarFolha() {
     toast("Abra uma folha antes de aprovar.");
     return;
   }
-  const result = await api(`/api/folhas/${competencia}/aprovar`, {
-    method: "POST",
-    body: JSON.stringify({ itens: state.folhaPreview }),
-  });
-  renderApprovalStatus(result.aprovacoes);
-  await loadFolha(competencia);
-  toast(`Aprovacao registrada: ${result.aprovacoes.count}/${result.aprovacoes.required}.`);
+  showBusy("Aprovando folha", "Registrando aprovação e atualizando o fluxo.");
+  try {
+    const result = await api(`/api/folhas/${competencia}/aprovar`, {
+      method: "POST",
+      body: JSON.stringify({ itens: state.folhaPreview }),
+    });
+    renderApprovalStatus(result.aprovacoes);
+    await loadFolha(competencia);
+    toast(result.fechamentoAutomatico ? "Aprovação concluída. Folha fechada automaticamente." : `Aprovacao registrada: ${result.aprovacoes.count}/${result.aprovacoes.required}.`);
+  } finally {
+    hideBusy();
+  }
+}
+
+async function reprovarFolha() {
+  const competencia = el.folhaForm.elements.competencia.value;
+  if (!competencia || !state.folhaAtual) {
+    toast("Abra uma folha antes de reprovar.");
+    return;
+  }
+  const motivo = window.prompt("Informe a justificativa da recusa:");
+  if (!motivo || !motivo.trim()) return;
+  showBusy("Reprovando folha", "Registrando justificativa e atualizando o fluxo.");
+  try {
+    await api(`/api/folhas/${competencia}/reprovar`, {
+      method: "POST",
+      body: JSON.stringify({ itens: state.folhaPreview, motivo }),
+    });
+    await loadFolha(competencia);
+    toast("Folha reprovada e liberada para ajuste.");
+  } finally {
+    hideBusy();
+  }
 }
 
 async function enviarFolhaAprovacao() {
@@ -1668,9 +2358,14 @@ async function enviarFolhaAprovacao() {
     toast("Abra uma folha antes de enviar para aprovação.");
     return;
   }
+  const aptos = state.folhaPreview.filter((item) => nfValidatedOrSimoneException(item) && Math.abs(Number(item.diferenca_nf || 0)) <= 0.01 && Number(item.liquido_pagar || 0) > 0).length;
+  const fora = state.folhaPreview.length - aptos;
+  if (!window.confirm(`Enviar a competência ${competencia} para aprovação?\n\nSerá criado um lote com ${aptos} prestador(es) apto(s). ${fora} ficarão fora deste lote por pendências ou divergências.`)) return;
   el.enviarAprovacaoFolha.disabled = true;
   el.enviarAprovacaoFolha.textContent = "Enviando...";
+  showBusy("Enviando aprovação", "Enviando a folha para o fluxo de aprovação.");
   try {
+    await saveFolhaDraftNow();
     const result = await api(`/api/folhas/${competencia}/enviar-aprovacao`, {
       method: "POST",
       body: JSON.stringify({ itens: state.folhaPreview }),
@@ -1679,6 +2374,7 @@ async function enviarFolhaAprovacao() {
     const falhas = result.falhas?.length || 0;
     toast(`Enviado para aprovação: ${enviados} e-mail(s), ${falhas} falha(s).`);
   } finally {
+    hideBusy();
     el.enviarAprovacaoFolha.textContent = "Enviar aprovação";
     el.enviarAprovacaoFolha.disabled = !folhaReadyForApproval();
   }
@@ -1690,10 +2386,15 @@ async function reabrirFolha() {
     toast("Abra uma folha antes de reabrir.");
     return;
   }
-  await api(`/api/folhas/${competencia}/reabrir`, { method: "POST", body: "{}" });
-  toast("Folha reaberta.");
-  await loadAll();
-  await loadFolha(competencia);
+  showBusy("Reabrindo folha", "Liberando a folha para ajustes e recarregando os dados.");
+  try {
+    await api(`/api/folhas/${competencia}/reabrir`, { method: "POST", body: "{}" });
+    toast("Folha reaberta.");
+    await loadAll();
+    await loadFolha(competencia);
+  } finally {
+    hideBusy();
+  }
 }
 
 async function solicitarNfs() {
@@ -1702,15 +2403,20 @@ async function solicitarNfs() {
     toast("Abra uma folha antes de solicitar NFs.");
     return;
   }
+  const pendentes = state.folhaPreview.filter((item) => !nfValidatedOrSimoneException(item)).length;
+  if (!window.confirm(`Solicitar NFs da competência ${competencia}?\n\nO sistema enviará e-mail somente para os ${pendentes} prestador(es) com NF pendente ou divergente.`)) return;
   el.solicitarNfs.disabled = true;
   el.solicitarNfs.textContent = "Enviando...";
+  showBusy("Solicitando NFs", "Enviando os avisos aos prestadores.");
   try {
+    await saveFolhaDraftNow();
     const result = await api(`/api/folhas/${competencia}/notificar-nfs`, { method: "POST", body: "{}" });
     const enviados = result.enviados?.length || 0;
     const falhas = result.falhas?.length || 0;
     const semEmail = result.semEmail?.length || 0;
     toast(`Solicitação enviada: ${enviados} e-mail(s), ${falhas} falha(s), ${semEmail} sem e-mail.`);
   } finally {
+    hideBusy();
     el.solicitarNfs.disabled = false;
     el.solicitarNfs.textContent = "Solicitar NFs";
   }
@@ -1724,41 +2430,53 @@ async function uploadNf(input) {
   const form = new FormData();
   form.append("nf", input.files[0]);
   form.append("valor_esperado", item.liquido_pagar || 0);
-  const response = await fetch(`/api/folhas/${competencia}/prestadores/${prestadorId}/nf`, {
-    method: "POST",
-    credentials: "same-origin",
-    body: form,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "Nao foi possivel enviar a NF.");
-  item.nf_id = data.nf.id;
-  item.nf_status = data.nf.status;
-  item.nf_original_name = data.nf.original_name;
-  item.nf_divergencias = (data.nf.divergencias || []).join(" | ");
-  if (data.nf.numero_nf) item.numero_nf = data.nf.numero_nf;
-  if (data.nf.valor_nf) item.valor_nf_emitida = Number(data.nf.valor_nf);
-  calculatePreview();
-  el.enviarAprovacaoFolha.disabled = state.folhaAtual?.status === "fechada" || !canManage() || !folhaReadyForApproval();
-  toast(data.nf.status === "validada" ? "NF validada e preenchida." : `NF enviada: ${data.nf.status}.`);
+  showBusy("Enviando NF", "Anexando e validando a nota fiscal.");
+  try {
+    const response = await fetch(`/api/folhas/${competencia}/prestadores/${prestadorId}/nf`, {
+      method: "POST",
+      credentials: "same-origin",
+      body: form,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Nao foi possivel enviar a NF.");
+    item.nf_id = data.nf.id;
+    item.nf_status = data.nf.status;
+    item.nf_original_name = data.nf.original_name;
+    item.nf_divergencias = (data.nf.divergencias || []).join(" | ");
+    if (data.nf.numero_nf) item.numero_nf = data.nf.numero_nf;
+    if (data.nf.valor_nf) item.valor_nf_emitida = Number(data.nf.valor_nf);
+    calculatePreview();
+    scheduleFolhaDraftSave();
+    el.enviarAprovacaoFolha.disabled = state.folhaAtual?.status === "fechada" || !canManage() || !folhaReadyForApproval();
+    toast(data.nf.status === "validada" ? "NF validada e preenchida." : `NF enviada: ${data.nf.status}.`);
+  } finally {
+    hideBusy();
+  }
 }
 
 async function deleteNf(nfId, prestadorId) {
   const item = state.folhaPreview.find((row) => Number(row.prestador_id || row.id) === Number(prestadorId));
   const nome = item?.razao_social || item?.nome || "esta NF";
   if (!window.confirm(`Excluir a NF de ${nome}?`)) return;
-  await api(`/api/nfs/${nfId}`, { method: "DELETE" });
-  if (item) {
-    item.nf_id = null;
-    item.nf_status = "pendente";
-    item.nf_original_name = "";
-    item.nf_divergencias = "";
-    item.nf_numero = "";
-    item.nf_valor = 0;
-    item.numero_nf = "";
-    item.valor_nf_emitida = 0;
+  showBusy("Excluindo NF", "Removendo o anexo e atualizando a folha.");
+  try {
+    await api(`/api/nfs/${nfId}`, { method: "DELETE" });
+    if (item) {
+      item.nf_id = null;
+      item.nf_status = "pendente";
+      item.nf_original_name = "";
+      item.nf_divergencias = "";
+      item.nf_numero = "";
+      item.nf_valor = 0;
+      item.numero_nf = "";
+      item.valor_nf_emitida = 0;
+    }
+    calculatePreview();
+    scheduleFolhaDraftSave();
+    toast("NF excluida.");
+  } finally {
+    hideBusy();
   }
-  calculatePreview();
-  toast("NF excluida.");
 }
 
 async function uploadRescisaoNf(input) {
@@ -1766,34 +2484,82 @@ async function uploadRescisaoNf(input) {
   if (!id || !input.files?.[0]) return;
   const form = new FormData();
   form.append("nf", input.files[0]);
-  const response = await fetch(`/api/rescisoes/${id}/nf`, {
-    method: "POST",
-    credentials: "same-origin",
-    body: form,
-  });
-  const data = await response.json().catch(() => ({}));
-  input.value = "";
-  if (!response.ok) throw new Error(data.error || "Nao foi possivel enviar a NF da rescisao.");
-  toast(data.nf.status === "validada" ? "NF da rescisao validada." : `NF enviada: ${data.nf.status}.`);
-  await loadAll();
+  showBusy("Enviando NF", "Anexando e validando a nota fiscal da rescisão.");
+  try {
+    const response = await fetch(`/api/rescisoes/${id}/nf`, {
+      method: "POST",
+      credentials: "same-origin",
+      body: form,
+    });
+    const data = await response.json().catch(() => ({}));
+    input.value = "";
+    if (!response.ok) throw new Error(data.error || "Nao foi possivel enviar a NF da rescisao.");
+    toast(data.nf.status === "validada" ? "NF da rescisao validada." : `NF enviada: ${data.nf.status}.`);
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
 }
 
 async function aprovarRescisao(id) {
-  const result = await api(`/api/rescisoes/${id}/aprovar`, { method: "POST", body: "{}" });
-  toast(`Aprovacao da rescisao registrada: ${result.aprovacoes.count}/3.`);
-  await loadAll();
+  showBusy("Aprovando rescisão", "Registrando aprovação e atualizando a lista.");
+  try {
+    const result = await api(`/api/rescisoes/${id}/aprovar`, { method: "POST", body: "{}" });
+    toast(result.finalizada ? "Aprovação concluída. Rescisão finalizada automaticamente." : `Aprovacao da rescisao registrada: ${result.aprovacoes.count}/${result.aprovacoes.required}.`);
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
+}
+
+async function reprovarRescisao(id) {
+  const motivo = window.prompt("Informe a justificativa da recusa:");
+  if (!motivo || !motivo.trim()) return;
+  showBusy("Reprovando rescisão", "Registrando justificativa e atualizando a lista.");
+  try {
+    await api(`/api/rescisoes/${id}/reprovar`, {
+      method: "POST",
+      body: JSON.stringify({ motivo }),
+    });
+    toast("Rescisão reprovada e liberada para ajuste.");
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
 }
 
 async function finalizarRescisao(id) {
-  await api(`/api/rescisoes/${id}/finalizar`, { method: "POST", body: "{}" });
-  toast("Rescisao finalizada.");
-  await loadAll();
+  showBusy("Finalizando rescisão", "Baixando o prestador e atualizando os registros.");
+  try {
+    await api(`/api/rescisoes/${id}/finalizar`, { method: "POST", body: "{}" });
+    toast("Rescisao finalizada.");
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
 }
 
 async function integrarRescisaoOmie(id) {
-  await api(`/api/rescisoes/${id}/integrar-omie`, { method: "POST", body: "{}" });
-  toast("Rescisao integrada na Omie.");
-  await loadAll();
+  showBusy("Integrando rescisão", "Criando o lançamento, enviando anexos e atualizando o status Omie.");
+  try {
+    await api(`/api/rescisoes/${id}/integrar-omie`, { method: "POST", body: "{}" });
+    toast("Rescisao integrada na Omie.");
+    await loadAll();
+  } catch (error) {
+    if (await confirmOmiePrestadorCadastro(error)) {
+      await api(`/api/rescisoes/${id}/integrar-omie`, {
+        method: "POST",
+        body: JSON.stringify({ cadastrar_prestadores_omie: true }),
+      });
+      toast("Rescisao integrada na Omie.");
+      await loadAll();
+      return;
+    }
+    toast(error.message);
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
 }
 
 function openRescisaoReport(id) {
@@ -1808,15 +2574,26 @@ function openRescisaoReport(id) {
 }
 
 async function notificarRescisaoNf(id) {
-  const result = await api(`/api/rescisoes/${id}/notificar-nf`, { method: "POST", body: "{}" });
-  toast(result.sent ? "E-mail de NF da rescisao enviado." : `Aviso nao enviado: ${result.reason || "verifique Microsoft Graph"}.`);
+  showBusy("Solicitando NF", "Enviando aviso da NF de rescisão.");
+  try {
+    const result = await api(`/api/rescisoes/${id}/notificar-nf`, { method: "POST", body: "{}" });
+    toast(result.sent ? "E-mail de NF da rescisao enviado." : `Aviso nao enviado: ${result.reason || "verifique Microsoft Graph"}.`);
+  } finally {
+    hideBusy();
+  }
 }
 
 async function enviarRescisaoAprovacao(id) {
-  const result = await api(`/api/rescisoes/${id}/enviar-aprovacao`, { method: "POST", body: "{}" });
-  const enviados = result.enviados?.length || 0;
-  const falhas = result.falhas?.length || 0;
-  toast(`Rescisao enviada para aprovação: ${enviados} e-mail(s), ${falhas} falha(s).`);
+  showBusy("Enviando aprovação", "Enviando a rescisão para o fluxo de aprovação.");
+  try {
+    const result = await api(`/api/rescisoes/${id}/enviar-aprovacao`, { method: "POST", body: "{}" });
+    const enviados = result.enviados?.length || 0;
+    const falhas = result.falhas?.length || 0;
+    toast(`Rescisao enviada para aprovação: ${enviados} e-mail(s), ${falhas} falha(s).`);
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
 }
 
 function editPrestador(id) {
@@ -1827,7 +2604,25 @@ function editPrestador(id) {
     if (field.type === "checkbox") field.checked = Boolean(value);
     else field.value = value || "";
   });
+  el.prestadorForm.elements.cliente_id.value = prestador.cliente_id || "";
+  renderPrestadorProjetoDepartamentoSelects();
+  el.prestadorForm.elements.projeto_id.value = prestador.projeto_id || "";
+  renderPrestadorProjetoDepartamentoSelects();
+  el.prestadorForm.elements.departamento_id.value = prestador.departamento_id || "";
+  if (el.clearPrestador) el.clearPrestador.hidden = true;
+  updatePrestadorPricingFields();
   openPrestadorModal("Editar prestador");
+}
+
+function updatePrestadorPricingFields() {
+  const tipo = el.prestadorForm.elements.precificacao_tipo?.value || "mensal";
+  const salarioField = el.prestadorForm.elements.salario_contrato;
+  const valorDiaField = el.prestadorForm.elements.valor_dia;
+  if (!salarioField || !valorDiaField) return;
+  salarioField.required = tipo !== "diaria";
+  valorDiaField.required = tipo === "diaria";
+  salarioField.closest("label").classList.toggle("muted-field", tipo === "diaria");
+  valorDiaField.closest("label").classList.toggle("muted-field", tipo !== "diaria");
 }
 
 async function loadAll() {
@@ -1841,7 +2636,7 @@ async function loadAll() {
     api("/api/config/app"),
     folhaAccess ? api("/api/resumo") : Promise.resolve({ prestadoresAtivos: 0, adiantamentosEmAberto: null, ultimaFolha: null }),
     prestadorAccess ? api("/api/prestadores") : Promise.resolve({ prestadores: [] }),
-    prestadorAccess || operationalAccess ? api("/api/cadastros") : Promise.resolve({ unidades: [], funcoes: [], categorias: [], departamentos: [], projetos: [] }),
+    prestadorAccess || operationalAccess ? api("/api/cadastros") : Promise.resolve({ clientes: [], unidades: [], funcoes: [], categorias: [], departamentos: [], projetos: [] }),
     adiantamentoAccess ? api("/api/adiantamentos") : Promise.resolve({ adiantamentos: [] }),
     rescisaoAccess ? api("/api/rescisoes") : Promise.resolve({ rescisoes: [] }),
     folhaAccess ? api("/api/folhas") : Promise.resolve({ folhas: [] }),
@@ -1853,6 +2648,7 @@ async function loadAll() {
   state.appConfig = appConfig;
   applyDateLimits();
   state.prestadores = prestadores.prestadores;
+  state.clientes = cadastros.clientes || [];
   state.unidades = cadastros.unidades;
   state.funcoes = cadastros.funcoes;
   state.categorias = cadastros.categorias;
@@ -1892,6 +2688,68 @@ async function loadAll() {
   }
 }
 
+function summarizeNfFolderImport(result) {
+  const flat = (result?.results || []).flatMap((competencia) => competencia.results || []);
+  const processed = flat.filter((item) => ["validada", "divergente"].includes(item.status)).length;
+  const reprocessed = flat.filter((item) => item.action === "reprocessada").length;
+  const duplicated = flat.filter((item) => item.status === "duplicada").length;
+  const errorItems = flat.filter((item) => item.status === "erro");
+  return { processed, reprocessed, duplicated, errors: errorItems.length, errorItems };
+}
+
+function totalNfFolderImportFiles(result) {
+  return (result?.results || []).reduce((sum, competencia) => sum + (competencia.results || []).length, 0);
+}
+
+function canSaveFolhaDraft() {
+  return Boolean(
+    state.folhaAtual
+    && !["fechada", "em_aprovacao"].includes(state.folhaAtual.status)
+    && canManage()
+    && canSeeSensitiveValues({ folhaStatus: state.folhaAtual.status }),
+  );
+}
+
+async function saveFolhaDraftNow() {
+  if (!state.folhaDraftDirty || !canSaveFolhaDraft()) return null;
+  if (state.folhaDraftTimer) {
+    clearTimeout(state.folhaDraftTimer);
+    state.folhaDraftTimer = null;
+  }
+  const competencia = el.folhaForm.elements.competencia.value;
+  if (!competencia) return null;
+  state.folhaDraftDirty = false;
+  state.folhaDraftSaving = api(`/api/folhas/${competencia}/rascunho`, {
+    method: "POST",
+    body: JSON.stringify({ itens: state.folhaPreview }),
+    busy: false,
+  }).catch((error) => {
+    state.folhaDraftDirty = true;
+    throw error;
+  }).finally(() => {
+    state.folhaDraftSaving = null;
+  });
+  return state.folhaDraftSaving;
+}
+
+function scheduleFolhaDraftSave() {
+  if (!canSaveFolhaDraft()) return;
+  state.folhaDraftDirty = true;
+  if (state.folhaDraftTimer) clearTimeout(state.folhaDraftTimer);
+  state.folhaDraftTimer = setTimeout(() => {
+    saveFolhaDraftNow().catch((error) => toast(error.message));
+  }, 700);
+}
+
+async function scanNfsBeforeRefresh() {
+  if (!canViewFolhas()) return null;
+  await saveFolhaDraftNow();
+  const folhaActive = document.querySelector("#folha")?.classList.contains("active");
+  const competencia = folhaActive ? el.folhaForm.elements.competencia.value : "";
+  const body = competencia ? JSON.stringify({ competencia }) : "{}";
+  return api("/api/folhas/importar-nfs-email", { method: "POST", body });
+}
+
 document.querySelectorAll(".nav-item").forEach((button) => {
   button.addEventListener("click", () => {
     setView(button.dataset.view);
@@ -1912,13 +2770,40 @@ document.querySelector(".settings-button").addEventListener("click", () => {
   if (hasPermission("manage_users")) loadUsuarios().catch((error) => toast(error.message));
 });
 
-el.refresh.addEventListener("click", () => loadAll().then(() => toast("Dados atualizados.")));
+el.refresh.addEventListener("click", async () => {
+  showBusy("Atualizando dados", "Sincronizando informações e verificando novas NFs.");
+  try {
+    const scan = await scanNfsBeforeRefresh();
+    await loadAll();
+    if (scan) {
+      const summary = summarizeNfFolderImport(scan);
+      const parts = [`Dados atualizados`];
+      if (summary.processed) parts.push(`${summary.processed} NF(s) lida(s)`);
+      if (summary.reprocessed) parts.push(`${summary.reprocessed} NF(s) relida(s)`);
+      if (summary.errors) {
+        const firstError = summary.errorItems?.[0];
+        parts.push(`${summary.errors} erro(s) na leitura${firstError?.file ? `: ${firstError.file}` : ""}`);
+      }
+      toast(`${parts.join(". ")}.`);
+    } else {
+      toast("Dados atualizados.");
+    }
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    hideBusy();
+  }
+});
 el.configBackdrop.addEventListener("click", closeConfigModal);
 document.querySelectorAll("[data-close-config-modal]").forEach((button) => {
   button.addEventListener("click", closeConfigModal);
 });
 el.folhaSearch.addEventListener("input", () => {
   state.folhaFilters.search = el.folhaSearch.value;
+  renderPreview();
+});
+el.folhaCategoriaFilter.addEventListener("change", () => {
+  state.folhaFilters.categoria = el.folhaCategoriaFilter.value;
   renderPreview();
 });
 el.folhaNfFilter.addEventListener("change", () => {
@@ -1947,7 +2832,33 @@ el.loginForm.addEventListener("submit", async (event) => {
     setView(defaultViewForUser());
     await loadAll();
   } catch (error) {
+    if (error.code === "FIRST_ACCESS_REQUIRED") {
+      el.loginFirstAccess.hidden = false;
+      el.loginMessage.textContent = error.message;
+      el.loginForm.elements.senha_primeiro_acesso.focus();
+      return;
+    }
     showLogin(error.message);
+  }
+});
+el.loginFirstAccessBtn.addEventListener("click", async () => {
+  el.loginMessage.textContent = "";
+  const body = formData(el.loginForm);
+  body.senha = body.senha_primeiro_acesso;
+  try {
+    await api("/api/auth/primeiro-acesso", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    el.loginFirstAccess.hidden = true;
+    const data = await api("/api/auth/me");
+    state.authUser = data.usuario;
+    hideLogin();
+    applyAuthUi();
+    setView(defaultViewForUser());
+    await loadAll();
+  } catch (error) {
+    el.loginMessage.textContent = error.message;
   }
 });
 el.logout.addEventListener("click", async () => {
@@ -1956,6 +2867,10 @@ el.logout.addEventListener("click", async () => {
   showLogin();
 });
 el.searchPrestador.addEventListener("input", renderPrestadores);
+el.prestadorStatusFilter.addEventListener("change", () => {
+  state.prestadorStatusFilter = el.prestadorStatusFilter.value;
+  renderPrestadores();
+});
 el.adiantamentoFilters.forEach((button) => {
   button.addEventListener("click", () => {
     state.adiantamentoFilter = button.dataset.adiantamentoFilter;
@@ -1983,30 +2898,83 @@ el.newAdiantamento.addEventListener("click", () => {
 });
 el.closeAdiantamentoModal.addEventListener("click", closeAdiantamentoModal);
 el.adiantamentoBackdrop.addEventListener("click", closeAdiantamentoModal);
+el.newRescisao.addEventListener("click", () => {
+  resetRescisaoForm();
+  openRescisaoModal();
+});
+el.closeRescisaoModal.addEventListener("click", closeRescisaoModal);
+el.rescisaoBackdrop.addEventListener("click", closeRescisaoModal);
 el.closeCompositionModal.addEventListener("click", closeCompositionModal);
 el.compositionBackdrop.addEventListener("click", closeCompositionModal);
+el.newUsuario.addEventListener("click", () => openUsuarioModal("new"));
+el.closeUsuarioModal.addEventListener("click", closeUsuarioModal);
+document.querySelectorAll("[data-user-filter]").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.usuarioAccessFilter = button.dataset.userFilter || "todos";
+    renderUsuarios();
+  });
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && el.prestadorForm.classList.contains("active")) closePrestadorModal();
   if (event.key === "Escape" && el.adiantamentoForm.classList.contains("active")) closeAdiantamentoModal();
+  if (event.key === "Escape" && el.rescisaoModal.classList.contains("active")) closeRescisaoModal();
   if (event.key === "Escape" && el.compositionModal.classList.contains("active")) closeCompositionModal();
   if (event.key === "Escape" && el.configBackdrop.classList.contains("active")) closeConfigModal();
 });
-document.querySelector("#clearPrestador").addEventListener("click", resetPrestadorForm);
-el.clearUsuario.addEventListener("click", clearUsuarioForm);
+el.clearPrestador.addEventListener("click", resetPrestadorForm);
+el.prestadorForm.elements.precificacao_tipo.addEventListener("change", updatePrestadorPricingFields);
+el.prestadorForm.elements.cliente_id.addEventListener("change", () => {
+  renderPrestadorProjetoDepartamentoSelects();
+});
+el.prestadorForm.elements.projeto_id.addEventListener("change", () => {
+  renderPrestadorProjetoDepartamentoSelects();
+});
+el.clearUsuario.addEventListener("click", closeUsuarioModal);
 el.usuarioForm.elements.perfil.addEventListener("change", applyDefaultUsuarioPermissoes);
+el.changePassword?.addEventListener("click", () => {
+  el.changePasswordForm.reset();
+  if (el.changePasswordDialog.parentElement !== document.body) {
+    document.body.appendChild(el.changePasswordDialog);
+  }
+  if (!el.changePasswordDialog.open) el.changePasswordDialog.showModal();
+});
+el.closeChangePassword?.addEventListener("click", () => el.changePasswordDialog.close());
+el.cancelChangePassword?.addEventListener("click", () => el.changePasswordDialog.close());
+
+el.changePasswordForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  showBusy("Alterando senha", "Salvando a nova senha.");
+  try {
+    await api("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify(formData(el.changePasswordForm)),
+    });
+    el.changePasswordForm.reset();
+    el.changePasswordDialog.close();
+    toast("Senha alterada.");
+  } finally {
+    hideBusy();
+  }
+});
 
 el.usuarioForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = collectUsuarioPermissoes(formData(el.usuarioForm));
   const id = data.id;
   delete data.id;
-  await api(id ? `/api/auth/users/${id}` : "/api/auth/users", {
-    method: id ? "PUT" : "POST",
-    body: JSON.stringify(data),
-  });
-  toast("Usuario salvo.");
-  clearUsuarioForm();
-  await loadUsuarios();
+  showBusy(id ? "Atualizando usuário" : "Criando usuário", "Salvando cadastro e permissões.");
+  try {
+    await api(id ? `/api/auth/users/${id}` : "/api/auth/users", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(data),
+    });
+    toast("Usuario salvo.");
+    closeUsuarioModal();
+    clearUsuarioForm();
+    await loadUsuarios();
+  } finally {
+    hideBusy();
+  }
 });
 
 el.prestadorForm.addEventListener("submit", async (event) => {
@@ -2014,13 +2982,20 @@ el.prestadorForm.addEventListener("submit", async (event) => {
   const data = formData(el.prestadorForm);
   const id = data.id;
   delete data.id;
-  await api(id ? `/api/prestadores/${id}` : "/api/prestadores", {
-    method: id ? "PUT" : "POST",
-    body: JSON.stringify(data),
-  });
-  toast("Prestador salvo.");
-  closePrestadorModal();
-  await loadAll();
+  showBusy(id ? "Atualizando prestador" : "Criando prestador", "Salvando cadastro e atualizando a tela.");
+  try {
+    await api(id ? `/api/prestadores/${id}` : "/api/prestadores", {
+      method: id ? "PUT" : "POST",
+      body: JSON.stringify(data),
+    });
+    toast("Prestador salvo.");
+    closePrestadorModal();
+    await loadAll();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    hideBusy();
+  }
 });
 
 el.adiantamentoForm.addEventListener("submit", async (event) => {
@@ -2029,21 +3004,28 @@ el.adiantamentoForm.addEventListener("submit", async (event) => {
     toast("Selecione um prestador.");
     return;
   }
-  await api("/api/adiantamentos", {
-    method: "POST",
-    body: JSON.stringify(formData(el.adiantamentoForm)),
-  });
-  el.adiantamentoForm.reset();
-  closeAdiantamentoModal();
-  toast("Adiantamento lancado.");
-  await loadAll();
+  showBusy("Lançando adiantamento", "Salvando o adiantamento e atualizando a tela.");
+  try {
+    await api("/api/adiantamentos", {
+      method: "POST",
+      body: JSON.stringify(formData(el.adiantamentoForm)),
+    });
+    el.adiantamentoForm.reset();
+    closeAdiantamentoModal();
+    toast("Adiantamento lancado.");
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
 });
 
 el.calcularRescisao.addEventListener("click", () => calcularRescisao().catch((error) => toast(error.message)));
 el.folhaReport.addEventListener("click", openFolhaReport);
 el.integrarOmie.addEventListener("click", () => integrarOmie().catch((error) => toast(error.message)));
+if (el.importarNfsFechadas) el.importarNfsFechadas.remove();
 el.reabrirFolha.addEventListener("click", () => reabrirFolha().catch((error) => toast(error.message)));
 el.aprovarFolha.addEventListener("click", () => aprovarFolha().catch((error) => toast(error.message)));
+el.reprovarFolha.addEventListener("click", () => reprovarFolha().catch((error) => toast(error.message)));
 el.solicitarNfs.addEventListener("click", () => solicitarNfs().catch((error) => toast(error.message)));
 el.enviarAprovacaoFolha.addEventListener("click", () => enviarFolhaAprovacao().catch((error) => toast(error.message)));
 el.smtpForm.addEventListener("submit", async (event) => {
@@ -2059,12 +3041,17 @@ el.emailTemplateForm.addEventListener("submit", async (event) => {
   await saveEmailTemplate();
 });
 el.testOmie.addEventListener("click", async () => {
-  await saveOmieConfig();
-  const result = await api("/api/config/omie/test", { method: "POST", body: "{}" });
-  el.omieStatus.textContent = result.contaCorrenteId
-    ? `Omie conectada. Conta corrente ${result.contaCorrenteId}.`
-    : "Omie conectada. Conta corrente nao localizada; sera usado o padrao do fornecedor.";
-  toast("Teste Omie concluido.");
+  showBusy("Testando Omie", "Validando credenciais e conta corrente configurada.");
+  try {
+    await saveOmieConfig();
+    const result = await api("/api/config/omie/test", { method: "POST", body: "{}" });
+    el.omieStatus.textContent = result.contaCorrenteId
+      ? `Omie conectada. Conta corrente ${result.contaCorrenteId}.`
+      : "Omie conectada. Conta corrente nao localizada; sera usado o padrao do fornecedor.";
+    toast("Teste Omie concluido.");
+  } finally {
+    hideBusy();
+  }
 });
 el.testSmtp.addEventListener("click", async () => {
   await saveSmtpConfig();
@@ -2081,17 +3068,19 @@ el.rescisaoForm.addEventListener("submit", async (event) => {
     toast("Selecione um prestador.");
     return;
   }
-  await api(`/api/prestadores/${data.prestador_id}/rescisao`, {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-  el.rescisaoForm.reset();
-  el.rescisaoForm.elements.data_rescisao.value = todayIso();
-  el.rescisaoForm.elements.descontos_manual.value = 0;
-  clearPrestadorPicker("rescisao");
-  el.rescisaoPreview.textContent = "Rescisao iniciada. Aguarde NF, aprovacoes e finalizacao.";
-  toast("Rescisao iniciada e aguardando NF.");
-  await loadAll();
+  showBusy("Criando rescisão", "Calculando, salvando e atualizando a tela.");
+  try {
+    await api(`/api/prestadores/${data.prestador_id}/rescisao`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    resetRescisaoForm();
+    closeRescisaoModal();
+    toast("Rescisao iniciada e aguardando NF.");
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
 });
 
 el.folhaForm.elements.competencia.addEventListener("change", () => loadFolha().catch((error) => toast(error.message)));
@@ -2107,16 +3096,22 @@ el.folhaForm.addEventListener("submit", async (event) => {
     valor_nf_emitida: item.valor_nf_emitida,
     numero_nf: item.numero_nf,
   }));
-  await api("/api/folhas", { method: "POST", body: JSON.stringify(data) });
-  toast("Folha fechada com sucesso.");
-  await loadAll();
-  setView("dashboard");
+  showBusy("Fechando folha", "Validando aprovações, NFs e salvando o fechamento.");
+  try {
+    await api("/api/folhas", { method: "POST", body: JSON.stringify(data) });
+    toast("Folha fechada com sucesso.");
+    await loadAll();
+    setView("dashboard");
+  } finally {
+    hideBusy();
+  }
 });
 
 const today = new Date();
 el.adiantamentoForm.elements.data_adiantamento.value = todayIso();
 el.adiantamentoForm.elements.competencia_inicial.value = temporaryMinAdiantamentoCompetencia();
 el.rescisaoForm.elements.data_rescisao.value = todayIso();
+el.rescisaoForm.elements.data_aviso.value = todayIso();
 applyDateLimits();
 el.folhaForm.elements.competencia.value = currentCompetencia();
 el.diasMesAuto.textContent = daysInCompetencia(el.folhaForm.elements.competencia.value);

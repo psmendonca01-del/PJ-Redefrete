@@ -310,8 +310,8 @@
 
       function renderReport(data) {
         const r = data.rescisao || {};
-        const proventos = Number(r.valor_proporcional || 0);
-        const descontos = Number(r.adiantamentos_abertos || 0) + Number(r.descontos_manual || 0);
+        const proventos = Number(r.valor_proporcional || 0) + Math.max(Number(r.valor_multa || 0), 0);
+        const descontos = Number(r.adiantamentos_abertos || 0) + Number(r.descontos_manual || 0) + Math.abs(Math.min(Number(r.valor_multa || 0), 0));
         document.title = `Relatório rescisão PJ - ${r.razao_social || r.nome || ""}`;
         document.querySelector("#report").innerHTML = `
           <header class="report-head">
@@ -346,6 +346,7 @@
             <tbody>
               <tr><th>Razão social</th><td>${escapeHtml(r.razao_social || "")}</td><th>Prestador</th><td>${escapeHtml(r.nome || "")}</td></tr>
               <tr><th>CPF/CNPJ</th><td>${escapeHtml([r.cpf, r.cnpj].filter(Boolean).join(" / "))}</td><th>Motivo</th><td>${escapeHtml(r.motivo || "")}</td></tr>
+              <tr><th>Aviso</th><td>${escapeHtml(`${formatDate(r.data_aviso)} | ${r.aviso_dias || 0} dias | ${Number(r.aviso_cumprido || 0) ? "cumprido" : "não cumprido"}`)}</td><th>Tipo</th><td>${escapeHtml(r.tipo_rescisao === "prestador" ? "Prestador rescinde" : "Empresa rescinde")}</td></tr>
             </tbody>
           </table>
 
@@ -354,9 +355,10 @@
               <div class="section-title"><h2>Memória de cálculo</h2></div>
               <table>
                 <tbody>
-                  <tr><th>Salário base</th><td class="num">${money(r.salario_base)}</td></tr>
+                  <tr><th>R$ Contrato</th><td class="num">${money(r.salario_base)}</td></tr>
                   <tr><th>Dias trabalhados</th><td class="num">${escapeHtml(`${r.dias_trabalhados || 0}/${r.dias_mes || 0}`)}</td></tr>
                   <tr><th>Valor proporcional</th><td class="num">${money(r.valor_proporcional)}</td></tr>
+                  <tr><th>Multa rescisão (${Number(r.multa_percentual || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%)</th><td class="num">${money(r.valor_multa)}</td></tr>
                   <tr><th>Adiantamentos em aberto</th><td class="num">${money(r.adiantamentos_abertos)}</td></tr>
                   <tr><th>Descontos manuais</th><td class="num">${money(r.descontos_manual)}</td></tr>
                   <tr class="total-row"><td>Total a pagar</td><td class="num">${money(r.valor_total_pagar)}</td></tr>
