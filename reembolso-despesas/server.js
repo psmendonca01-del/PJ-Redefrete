@@ -1729,6 +1729,42 @@ async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails, pr
   return results;
 }
 
+async function sendReembolsoRejectionEmail({ prestacaoId, motivo, aprovador }) {
+  const rows = await query(
+    `SELECT p.numero, p.total_despesas, p.valor_reembolsar, p.saldo_devolver,
+            u.nome AS solicitante, u.email
+       FROM rd_reembolso_prestacoes p
+       JOIN usuarios u ON u.id = p.solicitante_id
+      WHERE p.id = ?
+      LIMIT 1`,
+    [prestacaoId]
+  );
+  const prestacao = rows[0];
+  if (!prestacao?.email) return { skipped: true, reason: "Solicitante sem e-mail." };
+  const link = `${reembolsoPublicBaseUrl()}/?prestacao=${encodeURIComponent(prestacaoId)}`;
+  const html = `
+    <p>Ola, ${escapeHtml(prestacao.solicitante)}.</p>
+    <p>Sua prestação de contas <strong>${escapeHtml(prestacao.numero || prestacaoId)}</strong> foi devolvida para ajuste.</p>
+    <div style="margin:16px 0;padding:14px;border:1px solid #f3b4b4;border-radius:6px;background:#fff7f7">
+      <strong style="display:block;margin-bottom:8px;color:#991b1b">Motivo da recusa</strong>
+      <div style="color:#0b1726">${escapeHtml(motivo || "Ajuste solicitado pelo aprovador.")}</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px;margin:16px 0">
+      <tr><td style="width:150px;padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Aprovador</td><td style="padding:7px;border-top:1px solid #e5e7eb">${escapeHtml(aprovador || "")}</td></tr>
+      <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Total despesas</td><td style="padding:7px;border-top:1px solid #e5e7eb">${escapeHtml(formatMoney(prestacao.total_despesas))}</td></tr>
+      <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">A reembolsar</td><td style="padding:7px;border-top:1px solid #e5e7eb">${escapeHtml(formatMoney(prestacao.valor_reembolsar))}</td></tr>
+      <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">A devolver</td><td style="padding:7px;border-top:1px solid #e5e7eb">${escapeHtml(formatMoney(prestacao.saldo_devolver))}</td></tr>
+    </table>
+    <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#002b5f;color:#fff;text-decoration:none;padding:10px 14px;border-radius:4px;font-weight:700">Abrir prestação para corrigir</a></p>
+    <p style="font-size:12px;color:#667085">Após corrigir, envie novamente para aprovação.</p>
+  `;
+  return sendGraphMail({
+    to: prestacao.email,
+    subject: `Prestação ${prestacao.numero || prestacaoId} devolvida para ajuste`,
+    html
+  });
+}
+
 async function query(sql, params = []) {
   const [rows] = await pool.execute(sql, params);
   return rows;
@@ -2491,6 +2527,11 @@ async function reprovarPrestacaoReembolso(prestacaoId, user, justificativa = nul
     [prestacaoId, user.id, expectedStep.etapa, motivo, codigo, stamp]
   );
   await addHistory(prestacaoId, user.id, "reprovou_superior", motivo);
+  try {
+    await sendReembolsoRejectionEmail({ prestacaoId, motivo, aprovador: user.nome || user.email });
+  } catch (error) {
+    await addHistory(prestacaoId, user.id, "falha_email_recusa", `Nao foi possivel avisar o solicitante por e-mail: ${error.message}`);
+  }
   return { ok: true, autenticacao: codigo };
 }
 
