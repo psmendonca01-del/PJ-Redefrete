@@ -3870,6 +3870,11 @@ async function resolveOmieContaCorrenteId() {
   return null;
 }
 
+function resolveOmieContaAdiantamentoId() {
+  const id = Number(process.env.OMIE_CONTA_ADIANTAMENTO_ID || 0);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
 function extractOmieCategorias(data) {
   return data.categoria_cadastro
     || data.categorias
@@ -4103,10 +4108,14 @@ function omieContaPagarPayload({ competencia, item, fornecedorCodigo, contaCorre
     codigo_cliente_fornecedor: fornecedorCodigo,
     data_vencimento: formatOmieDate(vencimento),
     data_previsao: formatOmieDate(vencimento),
-    valor_documento: money(item.liquido_pagar),
+    valor_documento: money(item.valor_nf_emitida || item.valor_nf_previsto || item.liquido_pagar),
     codigo_categoria: String(item.categoria_omie_codigo || item.categoria || "").trim(),
     numero_documento_fiscal: String(item.numero_nf || "").slice(0, 20),
-    observacao: [`Folha PJ competencia ${competencia} - ${item.razao_social || item.nome}`, extras].filter(Boolean).join(" | "),
+    observacao: [
+      `Folha PJ competencia ${competencia} - ${item.razao_social || item.nome}`,
+      money(item.desconto_adiantamentos) > 0 ? `Adiantamento a compensar: ${formatCurrency(item.desconto_adiantamentos)}` : "",
+      extras,
+    ].filter(Boolean).join(" | "),
   };
   if (contaCorrenteId) payload.id_conta_corrente = contaCorrenteId;
   applyOmieAllocations(payload, { codigoProjeto, codigoDepartamento });
@@ -4135,6 +4144,35 @@ function omieRescisaoContaPagarPayload({ rescisao, fornecedorCodigo, contaCorren
   applyOmieAllocations(payload, { codigoProjeto, codigoDepartamento });
   applyOmieTransfer(payload, rescisao);
   return payload;
+}
+
+function omieFolhaBaixaAdiantamentoCode(competencia, item) {
+  return `RBF${String(competencia || "").replace(/\D/g, "")}${item.folha_item_id}`.slice(0, 20);
+}
+
+async function compensarFolhaItemComAdiantamento({ competencia, item, contaPagarId, dataCompensacao }) {
+  const valorCompensar = money(Math.min(
+    money(item.desconto_adiantamentos || 0),
+    money(item.valor_nf_emitida || item.valor_nf_previsto || item.liquido_pagar || 0),
+  ));
+  if (!valorCompensar || valorCompensar <= 0) return { valor: 0, skipped: true };
+  if (!contaPagarId) throw new Error("Omie nao retornou o codigo do titulo para baixar o adiantamento.");
+  const contaAdiantamentoId = resolveOmieContaAdiantamentoId();
+  if (!contaAdiantamentoId) throw new Error("Configure OMIE_CONTA_ADIANTAMENTO_ID para compensar adiantamentos no Omie.");
+  const codigoBaixa = omieFolhaBaixaAdiantamentoCode(competencia, item);
+  const payload = {
+    codigo_lancamento: Number(contaPagarId),
+    codigo_baixa_integracao: codigoBaixa,
+    codigo_conta_corrente: String(contaAdiantamentoId),
+    valor: valorCompensar,
+    desconto: 0,
+    juros: 0,
+    multa: 0,
+    data: formatOmieDate(dataCompensacao),
+    observacao: `Compensacao de adiantamento da folha ${competencia} - ${item.razao_social || item.nome}`,
+  };
+  const retorno = await omieCall("contaPagar", "LancarPagamento", payload);
+  return { valor: valorCompensar, codigo_baixa_integracao: codigoBaixa, retorno };
 }
 
 function validatePrestador(body, user = null, prestadorId = null) {
@@ -6708,7 +6746,9 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
        LEFT JOIN categorias c ON c.id = p.categoria_id
        LEFT JOIN departamentos d ON d.id = p.departamento_id
        LEFT JOIN projetos pr ON pr.id = p.projeto_id
-       WHERE fi.folha_id = ? AND fi.liquido_pagar > 0 AND fi.omie_status <> 'integrado'
+       WHERE fi.folha_id = ?
+         AND COALESCE(NULLIF(fi.valor_nf_emitida, 0), fi.valor_nf_previsto, fi.liquido_pagar) > 0
+         AND fi.omie_status <> 'integrado'
          AND (? IS NULL OR fi.lote_id = ?)
        ORDER BY p.nome, p.razao_social`,
       [folha.id, req.body?.lote_id || null, req.body?.lote_id || null],
@@ -6732,7 +6772,9 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
          LEFT JOIN categorias c ON c.id = p.categoria_id
          LEFT JOIN departamentos d ON d.id = p.departamento_id
          LEFT JOIN projetos pr ON pr.id = p.projeto_id
-         WHERE fi.folha_id = ? AND fi.liquido_pagar > 0 AND fi.omie_status <> 'integrado'
+         WHERE fi.folha_id = ?
+           AND COALESCE(NULLIF(fi.valor_nf_emitida, 0), fi.valor_nf_previsto, fi.liquido_pagar) > 0
+           AND fi.omie_status <> 'integrado'
            AND (? IS NULL OR fi.lote_id = ?)
          ORDER BY p.nome, p.razao_social`,
         [folha.id, req.body?.lote_id || null, req.body?.lote_id || null],
@@ -6777,6 +6819,12 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
         });
         const result = await omieCall("contaPagar", "UpsertContaPagar", payload);
         const codigoLancamento = Number(result.codigo_lancamento_omie || result.codigo_lancamento || result.codigo || 0) || null;
+        const compensacao = await compensarFolhaItemComAdiantamento({
+          competencia,
+          item,
+          contaPagarId: codigoLancamento,
+          dataCompensacao: vencimento,
+        });
         const anexos = await enviarAnexosFolhaItemOmie(
           { ...item, omie_codigo_integracao: payload.codigo_lancamento_integracao },
           competencia,
@@ -6793,6 +6841,7 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
           prestador: item.razao_social || item.nome,
           codigo_lancamento_integracao: payload.codigo_lancamento_integracao,
           codigo_lancamento_omie: codigoLancamento,
+          compensacao_adiantamento: compensacao.valor || 0,
           anexos: anexos.length,
         });
       } catch (error) {
