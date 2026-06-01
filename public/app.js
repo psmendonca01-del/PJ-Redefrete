@@ -353,6 +353,22 @@ function temporaryMinAdiantamentoCompetencia() {
   return state.appConfig.minAdiantamentoCompetencia || temporaryMinCompetencia();
 }
 
+function monthFromDate(value) {
+  return String(value || "").slice(0, 7);
+}
+
+function syncAdiantamentoCompetenciaFromDate(force = false) {
+  const dateInput = el.adiantamentoForm?.elements?.data_adiantamento;
+  const competenciaInput = el.adiantamentoForm?.elements?.competencia_inicial;
+  if (!dateInput || !competenciaInput) return;
+  const dataCompetencia = monthFromDate(dateInput.value);
+  const minCompetencia = temporaryMinAdiantamentoCompetencia();
+  if (!dataCompetencia || dataCompetencia < minCompetencia) return;
+  if (force || !competenciaInput.value || competenciaInput.value > dataCompetencia) {
+    competenciaInput.value = dataCompetencia;
+  }
+}
+
 function toast(message) {
   el.toast.textContent = message;
   el.toast.classList.add("show");
@@ -666,7 +682,7 @@ function closeCompositionModal() {
 function resetAdiantamentoForm() {
   el.adiantamentoForm.reset();
   el.adiantamentoForm.elements.data_adiantamento.value = todayIso();
-  el.adiantamentoForm.elements.competencia_inicial.value = temporaryMinAdiantamentoCompetencia();
+  syncAdiantamentoCompetenciaFromDate(true);
   clearPrestadorPicker("adiantamento");
 }
 
@@ -1784,6 +1800,7 @@ async function saveOmieConfig() {
 function applyDateLimits() {
   el.adiantamentoForm.elements.data_adiantamento.min = `${temporaryMinAdiantamentoCompetencia()}-01`;
   el.adiantamentoForm.elements.competencia_inicial.min = temporaryMinAdiantamentoCompetencia();
+  syncAdiantamentoCompetenciaFromDate();
   el.rescisaoForm.elements.data_rescisao.min = `${temporaryMinCompetencia()}-01`;
   el.rescisaoForm.elements.data_aviso.min = `${temporaryMinCompetencia()}-01`;
 }
@@ -2876,6 +2893,9 @@ el.adiantamentoFilters.forEach((button) => {
     state.adiantamentoFilter = button.dataset.adiantamentoFilter;
     renderAdiantamentos();
   });
+});
+el.adiantamentoForm.elements.data_adiantamento.addEventListener("change", () => {
+  syncAdiantamentoCompetenciaFromDate(true);
 });
 document.querySelectorAll("[data-prestador-search]").forEach((input) => {
   input.addEventListener("input", () => {
