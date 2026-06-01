@@ -2560,6 +2560,13 @@ function currentCompetencia() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+async function currentOpenFolhaCompetencia() {
+  const [[folha]] = await pool.query(
+    "SELECT competencia FROM folhas WHERE status = 'aberta' ORDER BY competencia DESC LIMIT 1",
+  );
+  return folha?.competencia || currentCompetencia();
+}
+
 function temporaryOpenCompetencias() {
   return String(process.env.TEMP_OPEN_COMPETENCIAS || "")
     .split(",")
@@ -4720,15 +4727,18 @@ app.get("/api/config/omie", (_req, res) => {
   });
 });
 
-app.get("/api/config/app", (_req, res) => {
+app.get("/api/config/app", async (_req, res) => {
   const temps = temporaryOpenCompetencias();
   const adiantamentoTemps = temporaryAdiantamentoCompetencias();
+  const openCompetencia = await currentOpenFolhaCompetencia();
+  const minEditable = temps.length ? [...temps, openCompetencia].sort()[0] : openCompetencia;
+  const minAdiantamento = adiantamentoTemps.length ? [...adiantamentoTemps, openCompetencia].sort()[0] : openCompetencia;
   res.json({
-    currentCompetencia: currentCompetencia(),
+    currentCompetencia: openCompetencia,
     temporaryOpenCompetencias: temps,
     temporaryAdiantamentoCompetencias: adiantamentoTemps,
-    minEditableCompetencia: temps.length ? [...temps].sort()[0] : currentCompetencia(),
-    minAdiantamentoCompetencia: adiantamentoTemps.length ? [...adiantamentoTemps].sort()[0] : currentCompetencia(),
+    minEditableCompetencia: minEditable,
+    minAdiantamentoCompetencia: minAdiantamento,
   });
 });
 
@@ -5293,7 +5303,7 @@ app.post("/api/adiantamentos", async (req, res) => {
   const valorTotal = money(req.body.valor_total);
   const competenciaInicial = req.body.competencia_inicial;
   const dataAdiantamento = req.body.data_adiantamento || new Date().toISOString().slice(0, 10);
-  const competenciaAtual = currentCompetencia();
+  const competenciaAtual = await currentOpenFolhaCompetencia();
   if (!req.body.prestador_id || valorTotal <= 0 || !competenciaInicial) {
     return res.status(400).json({ error: "Informe prestador, valor e competencia inicial." });
   }

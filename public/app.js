@@ -3014,6 +3014,8 @@ el.adiantamentoForm.addEventListener("submit", async (event) => {
     closeAdiantamentoModal();
     toast("Adiantamento lancado.");
     await loadAll();
+  } catch (error) {
+    toast(error.message);
   } finally {
     hideBusy();
   }
