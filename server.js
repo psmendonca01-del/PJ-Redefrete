@@ -2567,6 +2567,16 @@ async function currentOpenFolhaCompetencia() {
   return folha?.competencia || currentCompetencia();
 }
 
+async function isCompetenciaAberta(competencia) {
+  if (!competencia) return false;
+  const [[folha]] = await pool.query(
+    "SELECT status FROM folhas WHERE competencia = ? LIMIT 1",
+    [competencia],
+  );
+  if (folha) return folha.status === "aberta";
+  return competencia === await currentOpenFolhaCompetencia();
+}
+
 function temporaryOpenCompetencias() {
   return String(process.env.TEMP_OPEN_COMPETENCIAS || "")
     .split(",")
@@ -5303,15 +5313,19 @@ app.post("/api/adiantamentos", async (req, res) => {
   const valorTotal = money(req.body.valor_total);
   const competenciaInicial = req.body.competencia_inicial;
   const dataAdiantamento = req.body.data_adiantamento || new Date().toISOString().slice(0, 10);
-  const competenciaAtual = await currentOpenFolhaCompetencia();
   if (!req.body.prestador_id || valorTotal <= 0 || !competenciaInicial) {
     return res.status(400).json({ error: "Informe prestador, valor e competencia inicial." });
   }
-  if (dateCompetencia(dataAdiantamento) < competenciaAtual && !isTemporaryAdiantamentoCompetencia(dateCompetencia(dataAdiantamento))) {
-    return res.status(400).json({ error: "A data do adiantamento nao pode ser menor que o mes em aberto." });
+  const competenciaAdiantamento = dateCompetencia(dataAdiantamento);
+  const dataCompetenciaPermitida = await isCompetenciaAberta(competenciaAdiantamento)
+    || isTemporaryAdiantamentoCompetencia(competenciaAdiantamento);
+  const descontoCompetenciaPermitida = await isCompetenciaAberta(competenciaInicial)
+    || isTemporaryAdiantamentoCompetencia(competenciaInicial);
+  if (!dataCompetenciaPermitida) {
+    return res.status(400).json({ error: "A data do adiantamento precisa pertencer a uma folha aberta." });
   }
-  if (competenciaInicial < competenciaAtual && !isTemporaryAdiantamentoCompetencia(competenciaInicial)) {
-    return res.status(400).json({ error: "As parcelas nao podem iniciar antes do mes atual." });
+  if (!descontoCompetenciaPermitida) {
+    return res.status(400).json({ error: "O primeiro desconto precisa pertencer a uma folha aberta." });
   }
 
   const connection = await pool.getConnection();
