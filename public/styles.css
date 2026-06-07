@@ -81,6 +81,26 @@ body.modal-open {
   color: var(--muted);
 }
 
+.busy-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.busy-progress-head small {
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.busy-progress-head strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
 .progress {
   height: 8px;
   border-radius: 999px;
@@ -95,6 +115,13 @@ body.modal-open {
   border-radius: inherit;
   background: var(--red);
   animation: progress-slide 1.1s ease-in-out infinite;
+}
+
+.progress.determinate span {
+  width: var(--progress-value, 0%);
+  transform: none;
+  transition: width 0.25s ease;
+  animation: none;
 }
 
 @keyframes progress-slide {
@@ -466,6 +493,60 @@ td small {
 
 .cadastros-config {
   display: block;
+}
+
+.approval-flow-form {
+  display: grid;
+  gap: 16px;
+}
+
+.approval-flow-config {
+  display: grid;
+  gap: 14px;
+}
+
+.approval-flow-card {
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.approval-flow-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.approval-flow-card h3 {
+  margin: 0;
+}
+
+.approval-flow-card small {
+  color: var(--muted);
+}
+
+.approval-flow-rows {
+  display: grid;
+}
+
+.approval-flow-row {
+  display: grid;
+  grid-template-columns: 44px minmax(220px, 1fr) 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.approval-flow-row:last-child {
+  border-bottom: 0;
+}
+
+.approval-flow-row > span {
+  font-weight: 800;
+  color: var(--muted);
 }
 
 .aux-layout {
@@ -847,6 +928,16 @@ select:focus {
   border-color: rgba(217, 119, 6, 0.25);
   background: #fffbeb;
   color: #92400e;
+}
+
+.status-pill.error {
+  border-color: rgba(220, 38, 38, 0.25);
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.danger-text {
+  color: #991b1b;
 }
 
 .nf-status-button {

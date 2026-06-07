@@ -30,9 +30,6 @@ const byId = (id) => document.getElementById(id);
 const PRESTACAO_ABERTA_STATUSES = new Set([
   "rascunho",
   "enviada_superior",
-  "em_validacao_financeira",
-  "a_pagar",
-  "a_devolver",
   "reprovada_superior",
   "reprovada_financeiro"
 ]);
@@ -79,6 +76,17 @@ async function api(path, options = {}) {
   } finally {
     if (showProgress) hideBusy();
   }
+}
+
+function isDuplicateWarning(error) {
+  return error?.codigo === "duplicidade_suspeita" || error?.code === "duplicidade_suspeita";
+}
+
+function duplicateWarningText(error) {
+  const details = Array.isArray(error?.duplicidades) && error.duplicidades.length
+    ? `\n\nEncontrado: ${error.duplicidades.map((item) => `${item.prestacao_numero || "prestação"} | ${fmtDate(item.data_despesa)} | ${fmtMoney(item.valor)} | ${item.descricao || ""}`).join("\n")}`
+    : "";
+  return `${error?.message || error?.error || "Possível duplicidade encontrada."}${details}\n\nDeseja continuar mesmo assim?`;
 }
 
 function fullAccess() {
@@ -1062,11 +1070,14 @@ async function openDespesaDialog(prestacaoId, despesa = null) {
   state.currentPrestacaoId = Number(prestacaoId);
   state.editingDespesaId = despesa ? Number(despesa.id) : null;
   state.editingDespesaOriginalValor = despesa ? Number(despesa.valor || 0) : null;
+  state.despesaClientToken = null;
+  form.dataset.submitting = "0";
   form.reset();
   resetDespesaDocumentoState();
   byId("despesaTipo").innerHTML = optionList(state.tipos);
   byId("despesaDialogTitle").textContent = despesa ? "Editar despesa" : "Nova despesa";
   byId("despesaSubmitBtn").textContent = despesa ? "Salvar despesa" : "Adicionar despesa";
+  byId("despesaSubmitBtn").disabled = false;
   if (despesa) {
     setDespesaManualFields(true);
     form.elements.documento.required = false;
@@ -1189,15 +1200,35 @@ async function openPrestacao(id) {
       if (uploadForm.dataset.submitting === "1") return;
       uploadForm.dataset.submitting = "1";
       uploadForm.querySelectorAll("input, button").forEach((field) => { field.disabled = true; });
-      const formData = new FormData(uploadForm);
       showBusy("Enviando comprovante", "Aguarde, o arquivo está sendo anexado.");
       try {
-        const response = await fetch(`/api/despesas/${uploadForm.dataset.upload}/comprovantes`, {
-          method: "POST",
-          body: formData
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(data.error || "Falha ao anexar comprovante.");
+        const sendUpload = async ({ confirmarDuplicidade = false, confirmarDivergencia = false } = {}) => {
+          const formData = new FormData(uploadForm);
+          if (confirmarDuplicidade) formData.append("confirmar_duplicidade", "1");
+          if (confirmarDivergencia) formData.append("confirmar_divergencia_documento", "1");
+          const response = await fetch(`/api/despesas/${uploadForm.dataset.upload}/comprovantes`, {
+            method: "POST",
+            body: formData
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const error = new Error(data.error || "Falha ao anexar comprovante.");
+            Object.assign(error, data, { status: response.status });
+            throw error;
+          }
+          return data;
+        };
+        try {
+          await sendUpload();
+        } catch (error) {
+          if (isDuplicateWarning(error) && confirm(duplicateWarningText(error))) {
+            await sendUpload({ confirmarDuplicidade: true });
+          } else if (error.codigo === "documento_divergente" && confirm(`${error.message}\n\nDeseja anexar mesmo assim?`)) {
+            await sendUpload({ confirmarDivergencia: true });
+          } else {
+            throw error;
+          }
+        }
         showStatus("Comprovante anexado.");
         await loadAll();
         await openPrestacao(id);
@@ -1720,14 +1751,28 @@ byId("despesaForm")?.elements.quantidade_km?.addEventListener("input", () => {
 byId("despesaForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
+  if (form.dataset.submitting === "1") return;
+  form.dataset.submitting = "1";
+  const submitBtn = byId("despesaSubmitBtn");
+  const originalSubmitText = submitBtn?.textContent || "";
+  if (submitBtn) submitBtn.disabled = true;
+  if (submitBtn) submitBtn.textContent = "Salvando...";
   const prestacaoId = Number(state.currentPrestacaoId || 0);
-  if (!prestacaoId) return showStatus("Prestação não identificada para incluir a despesa.", true);
+  if (!prestacaoId) {
+    form.dataset.submitting = "0";
+    if (submitBtn) submitBtn.disabled = false;
+    return showStatus("Prestação não identificada para incluir a despesa.", true);
+  }
   const documento = form.elements.documento?.files?.[0] || null;
   const body = formDataJson(form);
   delete body.documento;
   delete body.qr_documento;
   body.valor_km = state.config.valor_km || "0.65";
+  body.client_token = state.despesaClientToken || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  state.despesaClientToken = body.client_token;
   if (!state.editingDespesaId && !documento) {
+    form.dataset.submitting = "0";
+    if (submitBtn) submitBtn.disabled = false;
     showStatus("Anexe a NF ou comprovante antes de adicionar a despesa.", true);
     return;
   }
@@ -1739,6 +1784,8 @@ byId("despesaForm")?.addEventListener("submit", async (event) => {
   if (financeEditable && valorMudou) {
     const justificativa = prompt("Informe a justificativa da alteração de valor:");
     if (!justificativa || !justificativa.trim()) {
+      form.dataset.submitting = "0";
+      if (submitBtn) submitBtn.disabled = false;
       showStatus("Justificativa obrigatória para alteração de valor pelo financeiro.", true);
       return;
     }
@@ -1750,26 +1797,53 @@ byId("despesaForm")?.addEventListener("submit", async (event) => {
       await api(`/api/despesas/${state.editingDespesaId}`, { method: "PUT", body: JSON.stringify(body) });
       showStatus("Despesa atualizada.");
     } else {
-      const created = await api(`/api/prestacoes/${prestacaoId}/despesas`, { method: "POST", body: JSON.stringify(body) });
+      const createExpense = async () => api(`/api/prestacoes/${prestacaoId}/despesas`, { method: "POST", body: JSON.stringify(body) });
+      let created;
+      try {
+        created = await createExpense();
+      } catch (error) {
+        if (!isDuplicateWarning(error)) {
+          throw error;
+        }
+        const confirmed = window.confirm(duplicateWarningText(error));
+        if (!confirmed) {
+          state.despesaClientToken = null;
+          showStatus("Lançamento cancelado. Nenhuma despesa foi adicionada.", true);
+          return;
+        }
+        body.confirmar_duplicidade = "1";
+        created = await createExpense();
+      }
       createdDespesaId = created.id;
       if (documento) {
         const uploadData = new FormData();
         uploadData.append("arquivo", documento);
         uploadData.append("prestacao_id", String(prestacaoId));
+        uploadData.append("confirmar_duplicidade", "1");
+        uploadData.append("skip_document_validation", "1");
         const response = await fetch(`/api/despesas/${createdDespesaId}/comprovantes`, {
           method: "POST",
           body: uploadData
         });
         const uploadResult = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(uploadResult.error || "Despesa criada, mas falhou ao anexar o comprovante.");
+        if (!response.ok) {
+          const error = new Error(uploadResult.error || "Despesa criada, mas falhou ao anexar o comprovante.");
+          Object.assign(error, uploadResult, { status: response.status });
+          throw error;
+        }
       }
       showStatus("Despesa adicionada.");
     }
     closeDespesaDialog();
+    state.despesaClientToken = null;
     await loadAll();
     await openPrestacao(prestacaoId);
   } catch (err) {
     showStatus(err.message, true);
+  } finally {
+    form.dataset.submitting = "0";
+    if (submitBtn) submitBtn.disabled = false;
+    if (submitBtn) submitBtn.textContent = originalSubmitText || (state.editingDespesaId ? "Salvar despesa" : "Adicionar despesa");
   }
 });
 

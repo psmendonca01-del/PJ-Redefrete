@@ -59,6 +59,7 @@
       .sheet {
         background: #fff;
         border: 1px solid var(--line);
+        overflow: hidden;
       }
 
       .report-head {
@@ -160,6 +161,16 @@
         border-collapse: collapse;
       }
 
+      .table-scroll {
+        width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .table-scroll table {
+        min-width: 840px;
+      }
+
       th,
       td {
         padding: 8px 8px;
@@ -254,6 +265,95 @@
         font-size: 11px;
       }
 
+      @media (max-width: 760px) {
+        body {
+          overflow-x: hidden;
+        }
+
+        .page {
+          width: 100%;
+          margin: 0;
+          padding: 10px 10px 22px;
+        }
+
+        .toolbar {
+          position: sticky;
+          top: 0;
+          z-index: 3;
+          justify-content: flex-start;
+          padding: 8px 0;
+          margin: 0 0 8px;
+          background: var(--paper);
+        }
+
+        .toolbar button {
+          min-height: 34px;
+          padding: 0 10px;
+          font-size: 12px;
+        }
+
+        .sheet {
+          border-radius: 8px;
+        }
+
+        .report-head {
+          grid-template-columns: 1fr;
+          gap: 14px;
+          padding: 18px 16px;
+        }
+
+        .brand img {
+          width: 150px;
+        }
+
+        h1 {
+          font-size: 22px;
+        }
+
+        .report-meta {
+          justify-items: start;
+          text-align: left;
+        }
+
+        .summary {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .summary article {
+          min-height: 68px;
+        }
+
+        .section-title {
+          align-items: flex-start;
+          flex-direction: column;
+          padding: 16px 14px 8px;
+        }
+
+        .section-title h2 {
+          font-size: 17px;
+        }
+
+        .table-scroll {
+          border-top: 1px solid var(--line);
+        }
+
+        th,
+        td {
+          padding: 9px 8px;
+          font-size: 11px;
+        }
+
+        .signatures {
+          grid-template-columns: 1fr;
+          gap: 28px;
+          padding: 30px 18px 20px;
+        }
+
+        .note {
+          padding: 0 18px 18px;
+        }
+      }
+
       @media print {
         body {
           background: #fff;
@@ -271,6 +371,15 @@
 
         .sheet {
           border: 0;
+          overflow: visible;
+        }
+
+        .table-scroll {
+          overflow: visible;
+        }
+
+        .table-scroll table {
+          min-width: 0;
         }
 
         .report-head {
@@ -441,6 +550,16 @@
         `;
       }
 
+      function makeTablesScrollable() {
+        document.querySelectorAll("#report > table").forEach((table) => {
+          if (table.parentElement?.classList.contains("table-scroll")) return;
+          const wrapper = document.createElement("div");
+          wrapper.className = "table-scroll";
+          table.parentNode.insertBefore(wrapper, table);
+          wrapper.appendChild(table);
+        });
+      }
+
       async function loadReportData() {
         const key = params.get("key");
         const stored = key ? sessionStorage.getItem(key) : null;
@@ -471,7 +590,9 @@
         const proventos = totals.valorDias + totals.adicoes + totals.bonus;
         const descontos = totals.descontos + totals.adiantamentos;
         const aprovacoes = data.aprovacoes || folha.aprovacoes || {};
-        const aprovadores = aprovacoes.aprovadores || [];
+        const fluxoAprovacao = (aprovacoes.fluxo || []).length
+          ? aprovacoes.fluxo
+          : (aprovacoes.aprovadores || []);
         const lotes = data.lotes || [];
         const excecoesPagamento = itens.map(paymentException).filter(Boolean);
         const aptosPagamento = itens.length - excecoesPagamento.length;
@@ -653,12 +774,12 @@
               </tr>
             </thead>
             <tbody>
-              ${aprovadores.length ? aprovadores.map((item) => `
+              ${fluxoAprovacao.length ? fluxoAprovacao.map((item) => `
                 <tr>
                   <td>${escapeHtml(item.nome)}</td>
                   <td>${escapeHtml(item.email)}</td>
-                  <td>${escapeHtml(formatDateTime(item.aprovado_em))}</td>
-                  <td><strong>${escapeHtml(item.codigo_autenticacao || "")}</strong></td>
+                  <td>${item.aprovado_em ? escapeHtml(formatDateTime(item.aprovado_em)) : escapeHtml(item.status === "agora" ? "Aguardando agora" : "Pendente")}</td>
+                  <td><strong>${escapeHtml(item.codigo_autenticacao || item.status || "")}</strong></td>
                 </tr>
               `).join("") : `<tr><td colspan="4">Sem aprovações registradas para esta versão da folha.</td></tr>`}
             </tbody>
@@ -671,6 +792,7 @@
           </section>
           <p class="note">Relatório gerencial de pagamentos PJ. Os valores de NF e diferenças dependem das informações lançadas na prévia/fechamento da folha.</p>
         `;
+        makeTablesScrollable();
       }
 
       loadReportData()

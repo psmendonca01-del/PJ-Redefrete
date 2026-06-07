@@ -103,6 +103,11 @@ app.use(express.static("public"));
 const perfis = ["master", "administrador", "financeiro", "operacional", "aprovador", "consulta"];
 const folhaApprovalOrder = ["simone", "paulo", "luciano"];
 const shortApprovalOrder = ["simone", "paulo"];
+const approvalFlowTypes = {
+  folha: { label: "Folha PJ", fallback: folhaApprovalOrder },
+  rescisao: { label: "Rescisao PJ", fallback: shortApprovalOrder },
+  adiantamento: { label: "Adiantamento PJ", fallback: shortApprovalOrder },
+};
 const simoneExceptionPrestadorId = 23;
 const allowOutOfOrderNfNumbers = false;
 const sessionCookieName = "redefrete_session";
@@ -208,6 +213,16 @@ function parsePermissions(value) {
     return JSON.parse(value);
   } catch {
     return {};
+  }
+}
+
+function parseJsonValue(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
   }
 }
 
@@ -319,6 +334,12 @@ async function ensureAuthSchema() {
     await addColumnIfMissing("folha_itens", "omie_codigo_integracao", "omie_codigo_integracao VARCHAR(60) NULL AFTER omie_codigo_lancamento");
     await addColumnIfMissing("folha_itens", "omie_erro", "omie_erro TEXT NULL AFTER omie_codigo_integracao");
     await addColumnIfMissing("folha_itens", "omie_integrado_em", "omie_integrado_em DATETIME NULL AFTER omie_erro");
+    await addColumnIfMissing("folha_itens", "omie_nf_anexo_status", "omie_nf_anexo_status VARCHAR(40) NOT NULL DEFAULT 'pendente' AFTER omie_integrado_em");
+    await addColumnIfMissing("folha_itens", "omie_nf_anexo_erro", "omie_nf_anexo_erro TEXT NULL AFTER omie_nf_anexo_status");
+    await addColumnIfMissing("folha_itens", "omie_nf_anexo_em", "omie_nf_anexo_em DATETIME NULL AFTER omie_nf_anexo_erro");
+    await addColumnIfMissing("folha_itens", "omie_baixa_status", "omie_baixa_status VARCHAR(40) NOT NULL DEFAULT 'pendente' AFTER omie_nf_anexo_em");
+    await addColumnIfMissing("folha_itens", "omie_baixa_erro", "omie_baixa_erro TEXT NULL AFTER omie_baixa_status");
+    await addColumnIfMissing("folha_itens", "omie_baixa_em", "omie_baixa_em DATETIME NULL AFTER omie_baixa_erro");
     await addColumnIfMissing("folha_itens", "prestador_nome", "prestador_nome VARCHAR(160) NULL AFTER prestador_id");
     await addColumnIfMissing("folha_itens", "prestador_razao_social", "prestador_razao_social VARCHAR(180) NULL AFTER prestador_nome");
     await addColumnIfMissing("folha_itens", "prestador_cpf", "prestador_cpf VARCHAR(14) NULL AFTER prestador_razao_social");
@@ -413,6 +434,7 @@ async function ensureAuthSchema() {
     );
   }
   await addColumnIfMissing("projetos", "cliente_id", "cliente_id INT NULL AFTER nome");
+  await addColumnIfMissing("projetos", "omie_codigo", "omie_codigo VARCHAR(20) NULL AFTER cliente_id");
   const operacoesPorCliente = [
     ["REDEFRETE", "REDEFRETE"],
     ["MAGALU", "MAGALU LM"],
@@ -494,6 +516,24 @@ async function ensureAuthSchema() {
   await pool.query("ALTER TABLE usuarios MODIFY senha_hash VARCHAR(255) NULL");
   await addColumnIfMissing("usuarios", "permissoes_json", "permissoes_json JSON NULL AFTER perfil");
   await addColumnIfMissing("usuarios", "prestador_id", "prestador_id INT NULL AFTER permissoes_json");
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS approval_fluxos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      tipo VARCHAR(40) NOT NULL,
+      ordem INT NOT NULL,
+      usuario_id INT NOT NULL,
+      ativo TINYINT(1) NOT NULL DEFAULT 1,
+      criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_approval_fluxos_usuario
+        FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+        ON DELETE CASCADE,
+      UNIQUE KEY uq_approval_fluxos_tipo_ordem (tipo, ordem),
+      UNIQUE KEY uq_approval_fluxos_tipo_usuario (tipo, usuario_id),
+      KEY idx_approval_fluxos_tipo (tipo, ativo, ordem)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+  await seedDefaultApprovalFlows();
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessoes (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -588,6 +628,14 @@ async function ensureAuthSchema() {
     await addColumnIfMissing("adiantamentos", "approval_rejeitado_por", "approval_rejeitado_por INT NULL AFTER approval_payload_hash");
     await addColumnIfMissing("adiantamentos", "approval_rejeitado_em", "approval_rejeitado_em DATETIME NULL AFTER approval_rejeitado_por");
     await addColumnIfMissing("adiantamentos", "approval_rejeicao_motivo", "approval_rejeicao_motivo TEXT NULL AFTER approval_rejeitado_em");
+    await addColumnIfMissing("adiantamentos", "omie_status", "omie_status VARCHAR(40) NOT NULL DEFAULT 'pendente' AFTER approval_rejeicao_motivo");
+    await addColumnIfMissing("adiantamentos", "omie_codigo_lancamento", "omie_codigo_lancamento BIGINT NULL AFTER omie_status");
+    await addColumnIfMissing("adiantamentos", "omie_codigo_integracao", "omie_codigo_integracao VARCHAR(60) NULL AFTER omie_codigo_lancamento");
+    await addColumnIfMissing("adiantamentos", "omie_erro", "omie_erro TEXT NULL AFTER omie_codigo_integracao");
+    await addColumnIfMissing("adiantamentos", "omie_integrado_em", "omie_integrado_em DATETIME NULL AFTER omie_erro");
+    await addColumnIfMissing("adiantamentos", "omie_anexos_status", "omie_anexos_status VARCHAR(40) NOT NULL DEFAULT 'pendente' AFTER omie_integrado_em");
+    await addColumnIfMissing("adiantamentos", "omie_anexos_erro", "omie_anexos_erro TEXT NULL AFTER omie_anexos_status");
+    await addColumnIfMissing("adiantamentos", "omie_anexos_em", "omie_anexos_em DATETIME NULL AFTER omie_anexos_erro");
   }
 
   await pool.query(`
@@ -815,7 +863,10 @@ function hasPermission(user, permission) {
 
 function canSeeSensitiveValues(user, context = {}) {
   if (isFullAccess(user)) return true;
-  if (context.folhaStatus === "fechada") return hasPermission(user, "view_values_closed");
+  if (context.folhaStatus === "fechada") {
+    if (context.requiresApproved && !context.approved) return false;
+    return hasPermission(user, "view_values_closed");
+  }
   return hasPermission(user, "view_values_open");
 }
 
@@ -870,7 +921,7 @@ function sanitizeFolhaItem(item, user, context = {}) {
 }
 
 function sanitizeFolhaResumo(row, user) {
-  if (canSeeSensitiveValues(user, { folhaStatus: row.status })) return row;
+  if (canSeeSensitiveValues(user, { folhaStatus: row.status, approved: row.aprovada, requiresApproved: true })) return row;
   return {
     ...row,
     nf_previsto_total: null,
@@ -909,6 +960,42 @@ function isMandatoryApprover(user) {
   return hasPermission(user, "approve_folhas") && !isFullAccess(user);
 }
 
+function normalizeApprovalTipo(tipo = "folha") {
+  return approvalFlowTypes[tipo] ? tipo : "folha";
+}
+
+async function seedDefaultApprovalFlows(db = pool) {
+  const [[row]] = await db.query("SELECT COUNT(*) AS total FROM approval_fluxos");
+  if (Number(row.total || 0) > 0) return;
+  const [users] = await db.query("SELECT id, nome, email FROM usuarios WHERE ativo = 1");
+  for (const [tipo, config] of Object.entries(approvalFlowTypes)) {
+    let ordem = 1;
+    for (const token of config.fallback) {
+      const approver = users.find((user) => normalizeLookupText(`${user.nome || ""} ${user.email || ""}`).includes(token));
+      if (!approver) continue;
+      await db.query(
+        "INSERT IGNORE INTO approval_fluxos (tipo, ordem, usuario_id, ativo) VALUES (?, ?, ?, 1)",
+        [tipo, ordem, approver.id],
+      );
+      ordem += 1;
+    }
+  }
+}
+
+async function getConfiguredApprovalFlow(db = pool, tipo = "folha") {
+  const safeTipo = normalizeApprovalTipo(tipo);
+  const [rows] = await db.query(
+    `SELECT af.id AS fluxo_id, u.id AS id, af.tipo, af.ordem, af.usuario_id, af.ativo,
+            u.nome, u.email, u.perfil, u.permissoes_json
+       FROM approval_fluxos af
+       JOIN usuarios u ON u.id = af.usuario_id
+      WHERE af.tipo = ? AND af.ativo = 1 AND u.ativo = 1
+      ORDER BY af.ordem ASC`,
+    [safeTipo],
+  );
+  return rows;
+}
+
 async function getFolhaApprovals(competencia, payloadHash, db = pool, loteId = null) {
   const [rows] = await db.query(
     `SELECT fa.id, fa.competencia, fa.usuario_id, fa.payload_hash, fa.codigo_autenticacao, fa.decisao, fa.aprovado_em, fa.comentario,
@@ -929,6 +1016,22 @@ async function getFolhaApprovals(competencia, payloadHash, db = pool, loteId = n
   const pendentes = mandatoryApprovers
     .filter((user) => !approvedMandatoryIds.has(Number(user.id)))
     .map((user) => ({ id: user.id, nome: user.nome, email: user.email, perfil: user.perfil }));
+  const approvedById = new Map(rows.map((row) => [Number(row.usuario_id), row]));
+  const fluxo = mandatoryApprovers.map((user, index) => {
+    const row = approvedById.get(Number(user.id));
+    const isNext = !row && pendentes[0] && Number(pendentes[0].id) === Number(user.id);
+    return {
+      etapa: index + 1,
+      id: user.id,
+      nome: user.nome,
+      email: user.email,
+      perfil: user.perfil,
+      status: row ? "aprovado" : isNext ? "agora" : "pendente",
+      codigo_autenticacao: row?.codigo_autenticacao || (row ? approvalAuthCode(competencia, row.usuario_id, payloadHash, loteId) : ""),
+      aprovado_em: row?.aprovado_em || null,
+      comentario: row?.comentario || null,
+    };
+  });
 
   return {
     required: mandatoryApprovers.length,
@@ -939,6 +1042,7 @@ async function getFolhaApprovals(competencia, payloadHash, db = pool, loteId = n
     lote_id: loteId ? Number(loteId) : null,
     pendentes,
     proximo: pendentes[0] || null,
+    fluxo,
     aprovadores: rows.map((row) => ({
       id: row.usuario_id,
       nome: row.nome,
@@ -959,8 +1063,8 @@ function normalizeRescisaoApprovalItem(rescisao) {
   return {
     rescisao_id: Number(rescisao.id || 0),
     prestador_id: Number(rescisao.prestador_id || 0),
-    data_rescisao: String(rescisao.data_rescisao || "").slice(0, 10),
-    data_aviso: String(rescisao.data_aviso || "").slice(0, 10),
+    data_rescisao: approvalDateOnly(rescisao.data_rescisao),
+    data_aviso: approvalDateOnly(rescisao.data_aviso),
     tipo_rescisao: String(rescisao.tipo_rescisao || "empresa"),
     aviso_dias: Number(rescisao.aviso_dias || 0),
     aviso_cumprido: Boolean(Number(rescisao.aviso_cumprido || 0)),
@@ -988,11 +1092,16 @@ function rescisaoApprovalAuthCode(rescisaoId, usuarioId, payloadHash) {
   return `RES-${code.slice(0, 4)}-${code.slice(4, 8)}-${code.slice(8, 12)}`;
 }
 
+function approvalDateOnly(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value || "").slice(0, 10);
+}
+
 function adiantamentoApprovalPayloadHash(adiantamento) {
   const payload = JSON.stringify({
     id: Number(adiantamento.id || 0),
     prestador_id: Number(adiantamento.prestador_id || 0),
-    data_adiantamento: String(adiantamento.data_adiantamento || "").slice(0, 10),
+    data_adiantamento: approvalDateOnly(adiantamento.data_adiantamento),
     valor_total: money(adiantamento.valor_total),
     parcelas: Number(adiantamento.parcelas || 0),
     competencia_inicial: String(adiantamento.competencia_inicial || ""),
@@ -1136,14 +1245,16 @@ function fallbackDataPagamentoReembolso() {
 
 async function getAdiantamentoApprovals(adiantamento, db = pool) {
   const payloadHash = adiantamentoApprovalPayloadHash(adiantamento);
+  const storedPayloadHash = String(adiantamento.approval_payload_hash || "").trim();
+  const validHashes = [...new Set([payloadHash, storedPayloadHash].filter(Boolean))];
   const [rows] = await db.query(
     `SELECT aa.id, aa.adiantamento_id, aa.usuario_id, aa.payload_hash, aa.codigo_autenticacao, aa.decisao, aa.aprovado_em, aa.comentario,
       u.nome, u.email, u.perfil
      FROM adiantamento_aprovacoes aa
      JOIN usuarios u ON u.id = aa.usuario_id
-     WHERE aa.adiantamento_id = ? AND aa.payload_hash = ? AND aa.decisao = 'aprovado'
+     WHERE aa.adiantamento_id = ? AND aa.payload_hash IN (?) AND aa.decisao = 'aprovado'
      ORDER BY aa.aprovado_em ASC`,
-    [adiantamento.id, payloadHash],
+    [adiantamento.id, validHashes.length ? validHashes : [payloadHash]],
   );
   const mandatoryApprovers = await getMandatoryApprovers(db, "adiantamento");
   const approvedMandatoryIds = new Set(
@@ -1175,14 +1286,16 @@ async function getAdiantamentoApprovals(adiantamento, db = pool) {
 
 async function getRescisaoApprovals(rescisao, db = pool) {
   const payloadHash = rescisaoApprovalPayloadHash(rescisao);
+  const storedPayloadHash = String(rescisao.approval_payload_hash || "").trim();
+  const validHashes = [...new Set([payloadHash, storedPayloadHash].filter(Boolean))];
   const [rows] = await db.query(
     `SELECT ra.id, ra.rescisao_id, ra.usuario_id, ra.payload_hash, ra.codigo_autenticacao, ra.decisao, ra.aprovado_em, ra.comentario,
       u.nome, u.email, u.perfil
      FROM rescisao_aprovacoes ra
      JOIN usuarios u ON u.id = ra.usuario_id
-     WHERE ra.rescisao_id = ? AND ra.payload_hash = ? AND ra.decisao = 'aprovado'
+     WHERE ra.rescisao_id = ? AND ra.payload_hash IN (?) AND ra.decisao = 'aprovado'
      ORDER BY ra.aprovado_em ASC`,
-    [rescisao.id, payloadHash],
+    [rescisao.id, validHashes.length ? validHashes : [payloadHash]],
   );
   const mandatoryApprovers = await getMandatoryApprovers(db, "rescisao");
   const approvedMandatoryIds = new Set(
@@ -1416,6 +1529,20 @@ function compareNfData({ nfData, prestador, expectedValue }) {
   return divergencias;
 }
 
+function expectedFolhaNfValue(item = {}) {
+  const liquido = money(item.liquido_pagar);
+  const adiantamentos = money(item.desconto_adiantamentos);
+  if (liquido || adiantamentos) return Number((liquido + adiantamentos).toFixed(2));
+  if (item.valor_nf_previsto !== undefined || item.descontos_manual !== undefined) {
+    return Number((money(item.valor_nf_previsto) - money(item.descontos_manual)).toFixed(2));
+  }
+  return 0;
+}
+
+function folhaNfDifference(item = {}) {
+  return Number((money(item.valor_nf_emitida) - expectedFolhaNfValue(item)).toFixed(2));
+}
+
 function nfFolderRoot() {
   if (process.env.NF_FOLDER_ROOT) return process.env.NF_FOLDER_ROOT;
   const correctedRoot = path.join(process.env.USERPROFILE || "", "OneDrive - Redefrete", "FOLHA", "NF\u00b4s PJ");
@@ -1436,10 +1563,6 @@ function folderNameToCompetencia(folderName) {
 
 function competenciaFromText(value, referenceDate = null) {
   const raw = normalizeSearchText(value || "");
-  const yyyyMm = raw.match(/\b(20\d{2})[-_/ ]?(0[1-9]|1[0-2])\b/);
-  if (yyyyMm) return `${yyyyMm[1]}-${yyyyMm[2]}`;
-  const mmYyyy = raw.match(/\b(0[1-9]|1[0-2])[-_/ ]?(20\d{2})\b/);
-  if (mmYyyy) return `${mmYyyy[2]}-${mmYyyy[1]}`;
   const monthNames = {
     janeiro: "01",
     jan: "01",
@@ -1468,6 +1591,10 @@ function competenciaFromText(value, referenceDate = null) {
   };
   const named = raw.match(/\b(janeiro|jan|fevereiro|fev|marco|mar|abril|abr|maio|mai|junho|jun|julho|jul|agosto|ago|setembro|set|outubro|out|novembro|nov|dezembro|dez)[-_/ ]*(20\d{2})\b/);
   if (named) return `${named[2]}-${monthNames[named[1]]}`;
+  const yyyyMm = raw.match(/\b(20\d{2})[-_/ ]?(0[1-9]|1[0-2])\b/);
+  if (yyyyMm) return `${yyyyMm[1]}-${yyyyMm[2]}`;
+  const mmYyyy = raw.match(/\b(0[1-9]|1[0-2])[-_/ ]?(20\d{2})\b/);
+  if (mmYyyy) return `${mmYyyy[2]}-${mmYyyy[1]}`;
   const monthOnly = raw.match(/\b(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/);
   const year = referenceDate ? new Date(referenceDate).getUTCFullYear() : null;
   return monthOnly && year ? `${year}-${monthNames[monthOnly[1]]}` : "";
@@ -1667,7 +1794,36 @@ async function folhaDataForNfImport(competencia, includeClosed = false) {
   return { folha: folhaRow, itens };
 }
 
-async function importNfFromFolderFile({ competencia, filePath, folhaData = null, includeClosed = false }) {
+async function upsertOpenFolhaDraftNf(competencia, prestadorId, item = {}, nfData = {}, db = pool, usuarioId = null) {
+  const numeroNf = normalizeNfNumber(nfData.numero_nf);
+  const valorNf = nfData.valor_nf === null || nfData.valor_nf === undefined || nfData.valor_nf === ""
+    ? null
+    : money(nfData.valor_nf);
+  if (!competencia || !prestadorId || (!numeroNf && valorNf === null)) return;
+  await db.query(
+    `INSERT INTO folha_rascunhos
+       (competencia, prestador_id, dias_trabalhados, adicoes, bonus, descontos_manual, valor_nf_emitida, numero_nf, usuario_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       valor_nf_emitida = VALUES(valor_nf_emitida),
+       numero_nf = VALUES(numero_nf),
+       usuario_id = COALESCE(VALUES(usuario_id), usuario_id),
+       atualizado_em = CURRENT_TIMESTAMP`,
+    [
+      competencia,
+      prestadorId,
+      normalizeFolhaDays(item.dias_trabalhados),
+      money(item.adicoes),
+      money(item.bonus),
+      money(item.descontos_manual),
+      valorNf,
+      numeroNf || null,
+      usuarioId,
+    ],
+  );
+}
+
+async function importNfFromFolderFile({ competencia, filePath, folhaData = null, includeClosed = false, ignoreUnknownPrestador = false }) {
   const originalName = path.basename(filePath);
   if (!isNfFile(filePath)) return { status: "ignorada", file: originalName, reason: "Arquivo nao suportado." };
   const stat = fs.statSync(filePath);
@@ -1686,7 +1842,12 @@ async function importNfFromFolderFile({ competencia, filePath, folhaData = null,
     if (duplicate) {
       return { status: "duplicada", file: originalName, nf_id: duplicate.id };
     }
-    return { status: "erro", file: originalName, reason: "CNPJ da NF nao localizado no cadastro.", nfData };
+    return {
+      status: ignoreUnknownPrestador ? "ignorada" : "erro",
+      file: originalName,
+      reason: "CNPJ da NF nao localizado no cadastro.",
+      nfData,
+    };
   }
 
   const folha = folhaData || await folhaDataForNfImport(competencia, includeClosed);
@@ -1729,7 +1890,7 @@ async function importNfFromFolderFile({ competencia, filePath, folhaData = null,
   const storedPath = path.join(uploadsDir, storedName);
   fs.copyFileSync(filePath, storedPath);
 
-  const divergencias = compareNfData({ nfData, prestador, expectedValue: item.liquido_pagar });
+  const divergencias = compareNfData({ nfData, prestador, expectedValue: expectedFolhaNfValue(item) });
   if (path.extname(filePath).toLowerCase() === ".pdf" && (!nfData.numero_nf || !nfData.valor_nf)) {
     divergencias.push("PDF salvo, mas nao foi possivel localizar todos os dados automaticamente.");
   }
@@ -1760,6 +1921,8 @@ async function importNfFromFolderFile({ competencia, filePath, folhaData = null,
       "UPDATE folha_itens SET numero_nf = ?, valor_nf_emitida = ? WHERE id = ?",
       [normalizeNfNumber(nfData.numero_nf) || null, nfData.valor_nf || null, folhaItem.id],
     );
+  } else if (!folhaItem?.id) {
+    await upsertOpenFolhaDraftNf(competencia, prestador.id, item, nfData);
   }
 
   return {
@@ -1773,7 +1936,7 @@ async function importNfFromFolderFile({ competencia, filePath, folhaData = null,
   };
 }
 
-async function importNfFromEmailData({ competencia, nfData, originalName, content, folhaData = null, includeClosed = false, sourceUrl = "" }) {
+async function importNfFromEmailData({ competencia, nfData, originalName, content, folhaData = null, includeClosed = false, sourceUrl = "", ignoreUnknownPrestador = false }) {
   const safeOriginalName = originalName || `email-nf-${competencia || currentCompetencia()}.html`;
   const prestador = await prestadorByCnpj(nfData.cnpj_emitente, { includeInactive: includeClosed });
   if (!prestador) {
@@ -1785,7 +1948,13 @@ async function importNfFromEmailData({ competencia, nfData, originalName, conten
       fileSize: Buffer.byteLength(content || "", "utf8"),
     });
     if (duplicate) return { status: "duplicada", file: safeOriginalName, nf_id: duplicate.id, sourceUrl };
-    return { status: "erro", file: safeOriginalName, reason: "CNPJ da NF nao localizado no cadastro.", nfData, sourceUrl };
+    return {
+      status: ignoreUnknownPrestador ? "ignorada" : "erro",
+      file: safeOriginalName,
+      reason: "CNPJ da NF nao localizado no cadastro.",
+      nfData,
+      sourceUrl,
+    };
   }
 
   const folha = folhaData || await folhaDataForNfImport(competencia, includeClosed);
@@ -1823,7 +1992,7 @@ async function importNfFromEmailData({ competencia, nfData, originalName, conten
 
   const storedName = storedNfFileName(safeOriginalName);
   fs.writeFileSync(path.join(uploadsDir, storedName), content || "", "utf8");
-  const divergencias = compareNfData({ nfData, prestador, expectedValue: item.liquido_pagar });
+  const divergencias = compareNfData({ nfData, prestador, expectedValue: expectedFolhaNfValue(item) });
   const nfStatus = divergencias.length ? "divergente" : "validada";
   const [result] = await pool.query(
     `INSERT INTO nf_arquivos
@@ -1851,6 +2020,8 @@ async function importNfFromEmailData({ competencia, nfData, originalName, conten
       "UPDATE folha_itens SET numero_nf = ?, valor_nf_emitida = ? WHERE id = ?",
       [normalizeNfNumber(nfData.numero_nf) || null, nfData.valor_nf || null, folhaItem.id],
     );
+  } else if (!folhaItem?.id) {
+    await upsertOpenFolhaDraftNf(competencia, prestador.id, item, nfData);
   }
   return {
     status: nfStatus,
@@ -1871,7 +2042,9 @@ async function reprocessStoredNfsForCompetencia(competencia, folhaData = null, i
     `SELECT n.*, p.cnpj, p.nome, p.razao_social
      FROM nf_arquivos n
      JOIN prestadores p ON p.id = n.prestador_id
+     LEFT JOIN rescisoes r ON r.nf_id = n.id
      WHERE n.competencia = ?
+       AND r.id IS NULL
        AND (n.status <> 'validada' OR n.numero_nf IS NULL OR n.valor_nf IS NULL OR n.cnpj_emitente IS NULL)
      ORDER BY n.id`,
     [competencia],
@@ -1889,7 +2062,7 @@ async function reprocessStoredNfsForCompetencia(competencia, folhaData = null, i
       const divergencias = compareNfData({
         nfData,
         prestador: nf,
-        expectedValue: item?.liquido_pagar || nf.valor_nf || 0,
+        expectedValue: item ? expectedFolhaNfValue(item) : (nf.valor_nf || 0),
       });
       if (path.extname(filePath).toLowerCase() === ".pdf" && (!nfData.numero_nf || !nfData.valor_nf)) {
         divergencias.push("PDF salvo, mas nao foi possivel localizar todos os dados automaticamente.");
@@ -1913,6 +2086,8 @@ async function reprocessStoredNfsForCompetencia(competencia, folhaData = null, i
           "UPDATE folha_itens SET numero_nf = ?, valor_nf_emitida = ? WHERE id = ?",
           [normalizeNfNumber(nfData.numero_nf) || null, nfData.valor_nf || null, nf.folha_item_id],
         );
+      } else if (!nf.folha_item_id && item) {
+        await upsertOpenFolhaDraftNf(competencia, nf.prestador_id, item, nfData);
       }
       results.push({
         status,
@@ -1926,6 +2101,45 @@ async function reprocessStoredNfsForCompetencia(competencia, folhaData = null, i
       });
     } catch (error) {
       results.push({ status: "erro", action: "reprocessada", file: nf.original_name, nf_id: nf.id, reason: error.message });
+    }
+  }
+  return results;
+}
+
+async function revalidateStoredNfsForFolhaData(competencia, folhaData = null) {
+  const folha = folhaData || await folhaDataForNfImport(competencia, false);
+  const itemsByPrestador = new Map(folha.itens.map((item) => [Number(item.prestador_id || item.id), item]));
+  const [rows] = await pool.query(
+    `SELECT n.*, p.cnpj, p.nome, p.razao_social
+     FROM nf_arquivos n
+     JOIN prestadores p ON p.id = n.prestador_id
+     LEFT JOIN rescisoes r ON r.nf_id = n.id
+     WHERE n.competencia = ?
+       AND r.id IS NULL
+     ORDER BY n.id`,
+    [competencia],
+  );
+  const results = [];
+  for (const nf of rows) {
+    const item = itemsByPrestador.get(Number(nf.prestador_id));
+    if (!item) continue;
+    const nfData = {
+      numero_nf: nf.numero_nf,
+      valor_nf: Number(nf.valor_nf || 0),
+      cnpj_emitente: onlyDigits(nf.cnpj_emitente),
+    };
+    const divergencias = compareNfData({
+      nfData,
+      prestador: nf,
+      expectedValue: expectedFolhaNfValue(item),
+    });
+    const status = divergencias.length ? "divergente" : "validada";
+    if (status !== nf.status || String(divergencias.join(" | ") || "") !== String(nf.divergencias || "")) {
+      await pool.query(
+        "UPDATE nf_arquivos SET status = ?, divergencias = ? WHERE id = ?",
+        [status, divergencias.join(" | ") || null, nf.id],
+      );
+      results.push({ nf_id: nf.id, prestador_id: nf.prestador_id, status, divergencias });
     }
   }
   return results;
@@ -2202,6 +2416,7 @@ async function importNfEmailAttachments(options = {}) {
   if (!mailbox) throw new Error("Configure GRAPH_FROM ou NF_DESTINATION_EMAIL para ler a caixa de NFs.");
   const includeClosed = Boolean(options.includeClosed);
   const requestedCompetencia = options.competencia || "";
+  const fallbackCompetencia = requestedCompetencia || await defaultNfImportCompetencia();
   const top = Math.min(Math.max(Number(options.top || 50), 1), 100);
   const select = "$select=id,internetMessageId,conversationId,subject,receivedDateTime,hasAttachments,from,body";
   const messages = await graphGetJson(`/users/${encodeURIComponent(mailbox)}/mailFolders/inbox/messages?$top=${top}&${select}`);
@@ -2214,7 +2429,13 @@ async function importNfEmailAttachments(options = {}) {
 
   for (const message of messages.value || []) {
     const processed = await emailImportAlreadyProcessed(message);
-    if (processed?.status === "processado") {
+    const shouldReprocessForRequestedCompetencia = Boolean(
+      requestedCompetencia
+      && processed?.status === "processado"
+      && processed.competencia
+      && processed.competencia !== requestedCompetencia
+    );
+    if (processed?.status === "processado" && !shouldReprocessForRequestedCompetencia) {
       let movedAgain = false;
       try {
         await graphMoveMessage(mailbox, message.id, "Importados");
@@ -2238,7 +2459,7 @@ async function importNfEmailAttachments(options = {}) {
     for (const attachment of attachmentData.value || []) {
       const originalName = attachment.name || "anexo";
       if (attachment.isInline || !isNfFile(originalName)) continue;
-      const competencia = requestedCompetencia || competenciaFromText(`${message.subject || ""} ${originalName}`, message.receivedDateTime);
+      const competencia = requestedCompetencia || competenciaFromText(`${message.subject || ""} ${originalName}`, message.receivedDateTime) || fallbackCompetencia;
       if (!competencia) {
         const result = {
           status: "ignorada",
@@ -2264,7 +2485,13 @@ async function importNfEmailAttachments(options = {}) {
       try {
         fs.writeFileSync(filePath, Buffer.from(attachment.contentBytes || "", "base64"));
         const folhaData = await folhaDataForNfImport(competencia, includeClosed);
-        const result = await importNfFromFolderFile({ competencia, filePath, folhaData, includeClosed });
+        const result = await importNfFromFolderFile({
+          competencia,
+          filePath,
+          folhaData,
+          includeClosed,
+          ignoreUnknownPrestador: true,
+        });
         const enriched = {
           ...result,
           source: "email",
@@ -2291,7 +2518,7 @@ async function importNfEmailAttachments(options = {}) {
       let linkIndex = 0;
       for (const url of linkUrls) {
         linkIndex += 1;
-        const competencia = requestedCompetencia || competenciaFromText(`${message.subject || ""} ${bodyText} ${url}`, message.receivedDateTime);
+        const competencia = requestedCompetencia || competenciaFromText(`${message.subject || ""} ${bodyText} ${url}`, message.receivedDateTime) || fallbackCompetencia;
         if (!competencia) {
           const result = {
             status: "ignorada",
@@ -2318,7 +2545,13 @@ async function importNfEmailAttachments(options = {}) {
           const folhaData = await folhaDataForNfImport(competencia, includeClosed);
           let result;
           if (isNfFile(downloaded.filePath)) {
-            result = await importNfFromFolderFile({ competencia, filePath: downloaded.filePath, folhaData, includeClosed });
+            result = await importNfFromFolderFile({
+              competencia,
+              filePath: downloaded.filePath,
+              folhaData,
+              includeClosed,
+              ignoreUnknownPrestador: true,
+            });
           } else {
             const nfData = parseEmailNfData(`${downloaded.text || ""}\n${bodyText}`);
             if (!nfData.cnpj_emitente || !nfData.numero_nf || !nfData.valor_nf) {
@@ -2340,6 +2573,7 @@ async function importNfEmailAttachments(options = {}) {
                 folhaData,
                 includeClosed,
                 sourceUrl: url,
+                ignoreUnknownPrestador: true,
               });
             }
           }
@@ -2365,7 +2599,7 @@ async function importNfEmailAttachments(options = {}) {
       }
     }
     if (!messageResults.some((result) => ["validada", "divergente", "duplicada"].includes(result.status))) {
-      const competencia = requestedCompetencia || competenciaFromText(`${message.subject || ""} ${bodyText}`, message.receivedDateTime);
+      const competencia = requestedCompetencia || competenciaFromText(`${message.subject || ""} ${bodyText}`, message.receivedDateTime) || fallbackCompetencia;
       const nfData = parseEmailNfData(bodyText);
       if (competencia && nfData.cnpj_emitente && nfData.numero_nf && nfData.valor_nf) {
         try {
@@ -2380,6 +2614,7 @@ async function importNfEmailAttachments(options = {}) {
               folhaData,
               includeClosed,
               sourceUrl: "",
+              ignoreUnknownPrestador: true,
             });
             const enriched = {
               ...result,
@@ -2461,6 +2696,45 @@ async function attachNfsToItems(competencia, items, db = pool) {
       valor_nf_emitida: Number(item.valor_nf_emitida || 0) > 0 ? item.valor_nf_emitida : nf.valor_nf,
     };
   });
+}
+
+async function prepareFolhaApprovalEmailItems(competencia, items = [], db = pool) {
+  const normalizedItems = normalizeApprovalItems(items);
+  if (!normalizedItems.length) return [];
+  const ids = normalizedItems.map((item) => Number(item.prestador_id)).filter(Boolean);
+  const [storedRows] = ids.length
+    ? await db.query(
+      `SELECT fi.prestador_id, fi.valor_dias, fi.adicoes, fi.descontos_manual,
+              fi.desconto_adiantamentos, fi.liquido_pagar, fi.valor_nf_emitida,
+              fi.numero_nf, p.nome, p.razao_social
+         FROM folha_itens fi
+         JOIN folhas f ON f.id = fi.folha_id
+         JOIN prestadores p ON p.id = fi.prestador_id
+        WHERE f.competencia = ? AND fi.prestador_id IN (?)`,
+      [competencia, ids],
+    )
+    : [[]];
+  const storedByPrestador = new Map(storedRows.map((row) => [Number(row.prestador_id), row]));
+  const normalizedByPrestador = new Map(normalizedItems.map((item) => [Number(item.prestador_id), item]));
+  const merged = items.map((item) => {
+    const prestadorId = Number(item.prestador_id || item.id);
+    const stored = storedByPrestador.get(prestadorId) || {};
+    const normalized = normalizedByPrestador.get(prestadorId) || {};
+    return {
+      ...stored,
+      ...item,
+      ...normalized,
+      prestador_id: prestadorId,
+      nome: item.nome || stored.nome || item.prestador_nome || item.razao_social || stored.razao_social || "",
+      razao_social: item.razao_social || stored.razao_social || "",
+      valor_dias: item.valor_dias ?? stored.valor_dias ?? 0,
+      desconto_adiantamentos: item.desconto_adiantamentos ?? stored.desconto_adiantamentos ?? 0,
+      liquido_pagar: item.liquido_pagar ?? stored.liquido_pagar ?? 0,
+      numero_nf: normalizeNfNumber(item.numero_nf || stored.numero_nf || ""),
+      valor_nf_emitida: item.valor_nf_emitida ?? stored.valor_nf_emitida ?? 0,
+    };
+  });
+  return attachNfsToItems(competencia, merged, db);
 }
 
 function requirePerfil(...allowed) {
@@ -2560,11 +2834,31 @@ function currentCompetencia() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function previousCompetencia(competencia = currentCompetencia()) {
+  const [year, month] = String(competencia || "").split("-").map(Number);
+  if (!year || !month) return "";
+  const date = new Date(year, month - 2, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
 async function currentOpenFolhaCompetencia() {
   const [[folha]] = await pool.query(
     "SELECT competencia FROM folhas WHERE status = 'aberta' ORDER BY competencia DESC LIMIT 1",
   );
   return folha?.competencia || currentCompetencia();
+}
+
+async function defaultNfImportCompetencia() {
+  const atual = currentCompetencia();
+  const anterior = previousCompetencia(atual);
+  if (anterior) {
+    const [[folhaAnterior]] = await pool.query(
+      "SELECT status FROM folhas WHERE competencia = ? LIMIT 1",
+      [anterior],
+    );
+    if (folhaAnterior?.status === "aberta") return anterior;
+  }
+  return atual;
 }
 
 async function isCompetenciaAberta(competencia) {
@@ -2770,7 +3064,13 @@ async function applyFolhaDrafts(competencia, itens, db = pool) {
       valor_nf_emitida: valorNfEmitida,
       numero_nf: numeroNf || null,
       liquido_pagar: liquido,
-      diferenca_nf: Number((valorNfEmitida - liquido).toFixed(2)),
+      diferenca_nf: folhaNfDifference({
+        valor_nf_emitida: valorNfEmitida,
+        liquido_pagar: liquido,
+        desconto_adiantamentos: item.desconto_adiantamentos,
+        valor_nf_previsto: valorNfPrevisto,
+        descontos_manual: descontosManual,
+      }),
     };
   });
 }
@@ -2820,8 +3120,17 @@ function addMonths(competencia, amount) {
 
 function nextMonthDeadline(competencia) {
   const [year, month] = competencia.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month, 3));
+  const day = Math.min(Math.max(Number(process.env.NF_DEADLINE_DAY || 3), 1), 28);
+  const date = new Date(Date.UTC(year, month, day));
   return date.toISOString().slice(0, 10);
+}
+
+async function canRegisterRescisaoCompetencia(competencia) {
+  if (!competencia) return false;
+  if (competencia >= currentCompetencia()) return true;
+  if (isTemporaryOpenCompetencia(competencia)) return true;
+  const openCompetencia = await currentOpenFolhaCompetencia();
+  return competencia === openCompetencia;
 }
 
 function formatCurrency(value) {
@@ -2977,6 +3286,14 @@ function plainTemplateToHtml(template, vars = {}) {
 function approvalEmailHtml(template, vars = {}) {
   const link = publicUrl(vars.link);
   const detalhe = String(vars.detalhe || "").trim();
+  const actionHtml = `
+    <div style="margin:18px 0 12px;padding:14px 16px;border:1px solid #d7dde6;border-radius:6px;background:#ffffff">
+      <div style="font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#667085;font-weight:800;margin-bottom:10px">Ação necessária</div>
+      <a href="${escapeHtml(link)}" style="display:inline-block;margin:0 10px 8px 0;background:#002b5f;color:#fff;text-decoration:none;padding:9px 13px;border-radius:4px;font-weight:700;font-size:13px">Revisar e aprovar</a>
+      <a href="${escapeHtml(link)}" style="display:inline-block;margin:0 0 8px 0;background:#fff;color:#344054;border:1px solid #cfd6df;text-decoration:none;padding:8px 12px;border-radius:4px;font-weight:700;font-size:13px">Solicitar ajuste</a>
+    </div>
+    <p style="font-size:12px;color:#667085;margin-top:0">A decisão será registrada no sistema com número de autenticação.</p>
+  `;
   const resumoRows = [
     ["Processo", vars.titulo],
     ["Resumo", detalhe],
@@ -2994,9 +3311,8 @@ function approvalEmailHtml(template, vars = {}) {
         `).join("")}
       </table>
     </div>
-    <p><a href="${escapeHtml(link)}" style="display:inline-block;background:#002b5f;color:#fff;text-decoration:none;padding:10px 14px;border-radius:4px;font-weight:700">Abrir aprovacao</a></p>
   ` : "";
-  return `${plainTemplateToHtml(template, { ...vars, link })}${resumoHtml}`;
+  return `${plainTemplateToHtml(template, { ...vars, link })}${actionHtml}${resumoHtml}${vars.demonstrativo_html || ""}`;
 }
 
 async function getEmailTemplate(tipo) {
@@ -3015,6 +3331,8 @@ function approvalRank(user, tipo = "folha") {
 }
 
 async function getMandatoryApprovers(db = pool, tipo = "folha") {
+  const configured = await getConfiguredApprovalFlow(db, tipo);
+  if (configured.length) return configured;
   const [users] = await db.query(
     "SELECT id, nome, email, perfil, permissoes_json FROM usuarios WHERE ativo = 1 ORDER BY nome",
   );
@@ -3025,7 +3343,7 @@ async function getMandatoryApprovers(db = pool, tipo = "folha") {
     .sort((a, b) => approvalRank(a, tipo) - approvalRank(b, tipo) || String(a.nome).localeCompare(String(b.nome), "pt-BR"));
 }
 
-async function sendApprovalRequestEmails(req, { titulo, detalhe, link, approvers = null, tipo = "folha" }) {
+async function sendApprovalRequestEmails(req, { titulo, detalhe, link, approvers = null, tipo = "folha", demonstrativoHtml = "" }) {
   if (!emailConfigured()) return { sent: false, reason: "E-mail nao configurado.", enviados: [], falhas: [] };
   const targetApprovers = approvers || await getMandatoryApprovers(pool, tipo);
   const template = await getEmailTemplate("aprovacao");
@@ -3044,6 +3362,7 @@ async function sendApprovalRequestEmails(req, { titulo, detalhe, link, approvers
         titulo,
         detalhe,
         link: publicUrl(link),
+        demonstrativo_html: demonstrativoHtml,
       };
       await sendMailMessage({
         to: email,
@@ -3058,10 +3377,507 @@ async function sendApprovalRequestEmails(req, { titulo, detalhe, link, approvers
   return { sent: enviados.length > 0, enviados, falhas, total: targetApprovers.length };
 }
 
-async function sendNextApprovalEmail(req, { tipo = "folha", titulo, detalhe, link, aprovacoes }) {
+async function sendNextApprovalEmail(req, { tipo = "folha", titulo, detalhe, link, aprovacoes, demonstrativoHtml = "" }) {
   const next = aprovacoes?.proximo;
   if (!next) return { sent: false, reason: "Fluxo de aprovação completo.", enviados: [], falhas: [], total: 0 };
-  return sendApprovalRequestEmails(req, { titulo, detalhe, link, approvers: [next], tipo });
+  return sendApprovalRequestEmails(req, { titulo, detalhe, link, approvers: [next], tipo, demonstrativoHtml });
+}
+
+function reembolsoEmailActionSecret() {
+  return String(process.env.EMAIL_ACTION_SECRET || process.env.SESSION_SECRET || process.env.GRAPH_CLIENT_SECRET || process.env.DB_PASSWORD || "redefrete-email-action");
+}
+
+function reembolsoEmailActionToken(payload) {
+  const body = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", reembolsoEmailActionSecret()).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+
+function reembolsoPublicBaseUrl() {
+  const configured = String(process.env.REEMBOLSO_APP_URL || process.env.APP_REEMBOLSO_URL || "");
+  const configuredIsLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?/i.test(configured);
+  return String(configured && !configuredIsLocalhost ? configured : `http://${localNetworkHost()}:3100`).replace(/\/$/, "");
+}
+
+function reembolsoEmailActionUrl(payload) {
+  const token = reembolsoEmailActionToken({
+    ...payload,
+    exp: payload.exp || Date.now() + (1000 * 60 * 60 * 24 * 7),
+  });
+  return `${reembolsoPublicBaseUrl()}/email-action/reembolso?token=${encodeURIComponent(token)}`;
+}
+
+function reembolsoComprovanteEmailUrl({ comprovanteId, prestacaoId, email }) {
+  const token = reembolsoEmailActionToken({
+    kind: "reembolso_comprovante",
+    comprovanteId,
+    prestacaoId,
+    email,
+    exp: Date.now() + (1000 * 60 * 60 * 24 * 7),
+  });
+  return `${reembolsoPublicBaseUrl()}/email-action/comprovante?token=${encodeURIComponent(token)}`;
+}
+
+function formatReembolsoDate(value) {
+  if (!value) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toLocaleDateString("pt-BR");
+  }
+  const [year, month, day] = String(value).slice(0, 10).split("-");
+  if (!year || !month || !day) return String(value);
+  return `${day}/${month}/${year}`;
+}
+
+async function reembolsoPrestacaoEmailResumo(id, fallback = "") {
+  const [rows] = await pool.query(
+    `SELECT p.numero, p.total_despesas, p.valor_reembolsar, p.saldo_devolver, p.data_inicio, p.data_fim,
+            u.nome AS solicitante, c.nome AS centro_custo
+       FROM rd_reembolso_prestacoes p
+       JOIN usuarios u ON u.id = p.solicitante_id
+       LEFT JOIN departamentos c ON c.id = p.centro_custo_id
+      WHERE p.id = ?
+      LIMIT 1`,
+    [id],
+  );
+  const row = rows[0];
+  if (!row) return fallback;
+  return [
+    `Prestacao ${row.numero || id}`,
+    `Solicitante: ${row.solicitante || "-"}`,
+    `Centro de custo: ${row.centro_custo || "-"}`,
+    `Periodo: ${formatReembolsoDate(row.data_inicio)} a ${formatReembolsoDate(row.data_fim)}`,
+    `Total de despesas: ${formatCurrency(row.total_despesas)}`,
+    `A reembolsar: ${formatCurrency(row.valor_reembolsar)}`,
+    `A devolver: ${formatCurrency(row.saldo_devolver)}`,
+  ].join(" | ");
+}
+
+async function reembolsoPrestacaoEmailDemonstrativo(id, aprovadorEmail) {
+  const [rows] = await pool.query(
+    `SELECT p.*, u.nome AS solicitante, u.email,
+            c.nome AS centro_custo,
+            COALESCE(pr.razao_social, u.nome) AS razao_social,
+            COALESCE(pr.cnpj, pr.cpf, '') AS documento
+       FROM rd_reembolso_prestacoes p
+       JOIN usuarios u ON u.id = p.solicitante_id
+       LEFT JOIN departamentos c ON c.id = p.centro_custo_id
+       LEFT JOIN prestadores pr ON pr.id = u.prestador_id AND pr.ativo = 1
+      WHERE p.id = ?
+      LIMIT 1`,
+    [id],
+  );
+  const prestacao = rows[0];
+  if (!prestacao) return "";
+  const [despesas] = await pool.query(
+    `SELECT d.id, d.data_despesa, d.descricao, d.valor, d.quantidade_km, d.origem, d.destino,
+            t.nome AS tipo
+       FROM rd_reembolso_despesas d
+       LEFT JOIN rd_reembolso_tipos_despesa t ON t.id = d.tipo_despesa_id
+      WHERE d.prestacao_id = ?
+      ORDER BY d.data_despesa, d.id`,
+    [id],
+  );
+  const [comprovantes] = await pool.query(
+    `SELECT c.id, c.despesa_id, c.nome_original
+       FROM rd_reembolso_comprovantes c
+       JOIN rd_reembolso_despesas d ON d.id = c.despesa_id
+      WHERE d.prestacao_id = ?
+      ORDER BY c.id`,
+    [id],
+  );
+  const comprovantesPorDespesa = new Map();
+  for (const comprovante of comprovantes) {
+    const key = Number(comprovante.despesa_id);
+    if (!comprovantesPorDespesa.has(key)) comprovantesPorDespesa.set(key, []);
+    comprovantesPorDespesa.get(key).push(comprovante);
+  }
+  const despesaRows = despesas.map((despesa) => {
+    const anexos = (comprovantesPorDespesa.get(Number(despesa.id)) || [])
+      .map((comprovante, index) => {
+        const url = reembolsoComprovanteEmailUrl({ comprovanteId: comprovante.id, prestacaoId: id, email: aprovadorEmail });
+        return `<a href="${escapeHtml(url)}" style="color:#002b5f;font-weight:700;text-decoration:none">Comprovante ${index + 1}</a>`;
+      }).join(" &nbsp; ");
+    const rota = [despesa.origem, despesa.destino].filter(Boolean).join(" -> ");
+    return `
+      <tr>
+        <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(formatReembolsoDate(despesa.data_despesa))}</td>
+        <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(despesa.tipo || "-")}</td>
+        <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(despesa.descricao || rota || "-")}</td>
+        <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;font-weight:700">${escapeHtml(formatCurrency(despesa.valor))}</td>
+        <td style="padding:8px;border-top:1px solid #e5e7eb">${anexos || "Sem anexo"}</td>
+      </tr>`;
+  }).join("");
+  return `
+    <div style="margin:18px 0;border:1px solid #d7dde6;border-radius:8px;overflow:hidden;font-family:Segoe UI,Arial,sans-serif;color:#0b1726">
+      <div style="background:#101722;color:#fff;padding:18px 20px">
+        <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:700">Demonstrativo de reembolso</div>
+        <div style="font-size:22px;font-weight:800;margin-top:4px">${escapeHtml(prestacao.numero || `PC-${id}`)} - ${escapeHtml(prestacao.razao_social || prestacao.solicitante || "")}</div>
+        <div style="font-size:13px;margin-top:6px">${escapeHtml(prestacao.centro_custo || "-")} | ${escapeHtml(formatReembolsoDate(prestacao.data_inicio))} a ${escapeHtml(formatReembolsoDate(prestacao.data_fim))}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr>
+          <td style="padding:12px;border-right:1px solid #e5e7eb"><strong>Despesas</strong><br><span style="font-size:18px;font-weight:800">${escapeHtml(formatCurrency(prestacao.total_despesas))}</span></td>
+          <td style="padding:12px;border-right:1px solid #e5e7eb"><strong>Adiantamento</strong><br><span style="font-size:18px;font-weight:800">${escapeHtml(formatCurrency(prestacao.valor_adiantado))}</span></td>
+          <td style="padding:12px;border-right:1px solid #e5e7eb"><strong>A reembolsar</strong><br><span style="font-size:18px;font-weight:800">${escapeHtml(formatCurrency(prestacao.valor_reembolsar))}</span></td>
+          <td style="padding:12px"><strong>A devolver</strong><br><span style="font-size:18px;font-weight:800">${escapeHtml(formatCurrency(prestacao.saldo_devolver))}</span></td>
+        </tr>
+      </table>
+      <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+        <strong>Dados do solicitante</strong>
+        <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+          <tr><td style="padding:7px;background:#f5f7fa;width:130px;font-weight:700">Solicitante</td><td style="padding:7px">${escapeHtml(prestacao.solicitante || "")}</td><td style="padding:7px;background:#f5f7fa;width:130px;font-weight:700">CPF/CNPJ</td><td style="padding:7px">${escapeHtml(prestacao.documento || "")}</td></tr>
+          <tr><td style="padding:7px;background:#f5f7fa;font-weight:700">E-mail</td><td style="padding:7px">${escapeHtml(prestacao.email || "")}</td><td style="padding:7px;background:#f5f7fa;font-weight:700">Status</td><td style="padding:7px">${escapeHtml(prestacao.status || "")}</td></tr>
+        </table>
+      </div>
+      <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+        <strong>Despesas e comprovantes</strong>
+        <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+          <thead><tr>
+            <th align="left" style="padding:8px;background:#f5f7fa">Data</th>
+            <th align="left" style="padding:8px;background:#f5f7fa">Tipo</th>
+            <th align="left" style="padding:8px;background:#f5f7fa">Descrição</th>
+            <th align="right" style="padding:8px;background:#f5f7fa">Valor</th>
+            <th align="left" style="padding:8px;background:#f5f7fa">Comprovantes</th>
+          </tr></thead>
+          <tbody>${despesaRows || `<tr><td colspan="5" style="padding:10px;border-top:1px solid #e5e7eb">Nenhuma despesa cadastrada.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function sendReembolsoApprovalEmailsTo(req, { titulo, detalhe, link, emails, prestacaoId }) {
+  const normalizedEmails = (emails || []).map((email) => String(email || "").toLowerCase()).filter(Boolean);
+  if (!normalizedEmails.length) return { sent: false, enviados: [], falhas: [], total: 0 };
+  const [aprovadores] = await pool.query(
+    `SELECT MIN(nome) AS nome, LOWER(email) AS email
+       FROM usuarios
+      WHERE ativo = 1
+        AND LOWER(email) IN (${normalizedEmails.map(() => "?").join(",")})
+      GROUP BY LOWER(email)`,
+    normalizedEmails,
+  );
+  const missingEmails = normalizedEmails.filter((email) => !aprovadores.some((aprovador) => aprovador.email === email));
+  const targets = [
+    ...aprovadores,
+    ...missingEmails.map((email) => {
+      const flow = REEMBOLSO_APPROVAL_FLOW.find((item) => item.email === email);
+      return { nome: flow?.nome || email, email };
+    }),
+  ];
+  const enviados = [];
+  const falhas = [];
+  for (const aprovador of targets) {
+    try {
+      const safeLink = publicUrl(link);
+      const demonstrativo = prestacaoId ? await reembolsoPrestacaoEmailDemonstrativo(prestacaoId, aprovador.email) : "";
+      const approveLink = prestacaoId ? reembolsoEmailActionUrl({ kind: "reembolso_prestacao", action: "aprovar", id: Number(prestacaoId), email: aprovador.email }) : "";
+      const rejectLink = prestacaoId ? reembolsoEmailActionUrl({ kind: "reembolso_prestacao", action: "reprovar", id: Number(prestacaoId), email: aprovador.email, reason: "Solicitado ajuste pelo aprovador." }) : "";
+      const html = `
+        <p>Ola, ${escapeHtml(aprovador.nome)}.</p>
+        <p>${escapeHtml(detalhe)}</p>
+        ${prestacaoId ? `
+          <div style="margin:18px 0 12px;padding:14px 16px;border:1px solid #d7dde6;border-radius:6px;background:#ffffff">
+            <div style="font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#667085;font-weight:800;margin-bottom:10px">Ação necessária</div>
+            <a href="${escapeHtml(approveLink)}" style="display:inline-block;margin:0 10px 8px 0;background:#002b5f;color:#fff;text-decoration:none;padding:9px 13px;border-radius:4px;font-weight:700;font-size:13px">Revisar e aprovar</a>
+            <a href="${escapeHtml(rejectLink)}" style="display:inline-block;margin:0 0 8px 0;background:#fff;color:#344054;border:1px solid #cfd6df;text-decoration:none;padding:8px 12px;border-radius:4px;font-weight:700;font-size:13px">Solicitar ajuste</a>
+          </div>
+          <p style="font-size:12px;color:#667085;margin-top:0">A decisão será registrada no sistema com número de autenticação.</p>
+        ` : ""}
+        <div style="margin:16px 0;padding:14px;border:1px solid #d7dde6;border-radius:6px;background:#f8fafc">
+          <strong style="display:block;margin-bottom:10px;color:#0b1726">Resumo para aprovacao</strong>
+          <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">
+            <tr><td style="width:110px;padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Processo</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(titulo)}</td></tr>
+            <tr><td style="width:110px;padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Detalhe</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(detalhe)}</td></tr>
+            <tr><td style="width:110px;padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Link</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(safeLink)}</td></tr>
+          </table>
+        </div>
+        ${demonstrativo}
+        <p><a href="${escapeHtml(safeLink)}" style="display:inline-block;background:#002b5f;color:#fff;text-decoration:none;padding:10px 14px;border-radius:4px;font-weight:700">${escapeHtml(titulo)}</a></p>
+      `;
+      await sendMailMessage({ to: aprovador.email, subject: titulo, html });
+      enviados.push({ nome: aprovador.nome, email: aprovador.email });
+    } catch (error) {
+      falhas.push({ nome: aprovador.nome, email: aprovador.email, erro: error.message });
+    }
+  }
+  return { sent: enviados.length > 0, enviados, falhas, total: targets.length };
+}
+
+function approvalMiniTable(rows = []) {
+  return `
+    <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">
+      ${rows.map(([label, value, strong = false]) => `
+        <tr>
+          <td style="width:180px;padding:8px;border-top:1px solid #e5e7eb;background:#f5f7fa;color:#344054;font-weight:700">${escapeHtml(label)}</td>
+          <td style="padding:8px;border-top:1px solid #e5e7eb;color:#0b1726;${strong ? "font-weight:800" : ""}">${value}</td>
+        </tr>
+      `).join("")}
+    </table>
+  `;
+}
+
+function approvalDemonstrativoShell({ eyebrow, title, subtitle, stats = [], body = "" }) {
+  return `
+    <div style="margin:18px 0;border:1px solid #d7dde6;border-radius:8px;overflow:hidden;font-family:Segoe UI,Arial,sans-serif;color:#0b1726">
+      <div style="background:#101722;color:#fff;padding:18px 20px">
+        <div style="font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-weight:700">${escapeHtml(eyebrow || "Demonstrativo")}</div>
+        <div style="font-size:22px;font-weight:800;margin-top:4px">${escapeHtml(title || "")}</div>
+        ${subtitle ? `<div style="font-size:13px;margin-top:6px">${escapeHtml(subtitle)}</div>` : ""}
+      </div>
+      ${stats.length ? `
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr>${stats.map((stat) => `
+            <td style="padding:12px;border-right:1px solid #e5e7eb">
+              <strong>${escapeHtml(stat.label)}</strong><br>
+              <span style="font-size:18px;font-weight:800">${escapeHtml(stat.value)}</span>
+            </td>
+          `).join("")}</tr>
+        </table>
+      ` : ""}
+      ${body}
+    </div>
+  `;
+}
+
+function renderFolhaApprovalEmailDemonstrativo(competencia, itens = [], { lote = null, pendentesNf = [], baseUrl = "", aprovacoes = null } = {}) {
+  const totalValorDias = itens.reduce((sum, item) => sum + money(item.valor_dias), 0);
+  const totalAdicoes = itens.reduce((sum, item) => sum + money(item.adicoes), 0);
+  const totalDescontos = itens.reduce((sum, item) => sum + money(item.descontos_manual), 0);
+  const totalAdiantamentos = itens.reduce((sum, item) => sum + money(item.desconto_adiantamentos), 0);
+  const totalPagar = itens.reduce((sum, item) => sum + money(item.liquido_pagar), 0);
+  const totalNf = itens.reduce((sum, item) => sum + money(item.valor_nf_emitida), 0);
+  const diferenca = totalNf - (totalPagar + totalAdiantamentos);
+  const aprovacaoAtual = aprovacoes?.approved
+    ? "Fluxo completo"
+    : (aprovacoes?.proximo?.nome ? `Agora: ${aprovacoes.proximo.nome}` : "Aguardando envio/atualização");
+  const pendentesAprovacao = (aprovacoes?.pendentes || []).map((item) => item.nome).filter(Boolean);
+  const aprovadoresRegistrados = (aprovacoes?.aprovadores || []).map((item) => item.codigo_autenticacao ? `${item.nome} (${item.codigo_autenticacao})` : item.nome).filter(Boolean);
+  const rows = itens.map((item) => {
+    const numeroNf = normalizeNfNumber(item.numero_nf || item.nf_numero || "");
+    const nfHref = item.nf_id
+      ? (baseUrl
+        ? `${String(baseUrl).replace(/\/$/, "")}/api/nfs/${item.nf_id}/view`
+        : publicUrl(`/api/nfs/${item.nf_id}/view`))
+      : "";
+    const nfLink = item.nf_id
+      ? `<a href="${escapeHtml(nfHref)}" style="color:#002b5f;font-weight:700;text-decoration:none">NF ${escapeHtml(numeroNf || "arquivo")}</a>`
+      : `<span style="color:#667085">-</span>`;
+    return `
+    <tr>
+      <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(item.nome || item.razao_social || `Prestador ${item.prestador_id || item.id || ""}`)}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right">${formatCurrency(item.valor_dias)}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right">${formatCurrency(item.adicoes)}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right">${formatCurrency(item.descontos_manual)}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right">${formatCurrency(item.desconto_adiantamentos)}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;font-weight:800">${formatCurrency(item.liquido_pagar)}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:center">${nfLink}</td>
+    </tr>
+  `;
+  }).join("");
+  const body = `
+    <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+      <strong>Resumo do lote</strong>
+      ${approvalMiniTable([
+        ["Valor dias", formatCurrency(totalValorDias)],
+        ["Adições", formatCurrency(totalAdicoes)],
+        ["Descontos", formatCurrency(totalDescontos)],
+        ["Adiantamentos", formatCurrency(totalAdiantamentos)],
+        ["Valor NF", formatCurrency(totalNf)],
+        ["Diferença NF", formatCurrency(diferenca)],
+        ["Total a pagar", formatCurrency(totalPagar), true],
+      ])}
+    </div>
+    <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+      <strong>Fluxo de aprovação</strong>
+      ${approvalMiniTable([
+        ["Situação", escapeHtml(`${aprovacoes?.count || 0}/${aprovacoes?.required || 0} aprovado(s)`)],
+        ["Etapa atual", escapeHtml(aprovacaoAtual), true],
+        ["Pendentes", escapeHtml(pendentesAprovacao.length ? pendentesAprovacao.join(", ") : "-")],
+        ["Aprovações registradas", escapeHtml(aprovadoresRegistrados.length ? aprovadoresRegistrados.join(", ") : "-")],
+      ])}
+    </div>
+    <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+      <strong>Prestadores no lote</strong>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+        <thead><tr>
+          <th align="left" style="padding:8px;background:#f5f7fa">Prestador</th>
+          <th align="right" style="padding:8px;background:#f5f7fa">Valor dias</th>
+          <th align="right" style="padding:8px;background:#f5f7fa">Adições</th>
+          <th align="right" style="padding:8px;background:#f5f7fa">Descontos</th>
+          <th align="right" style="padding:8px;background:#f5f7fa">Adiantamento</th>
+          <th align="right" style="padding:8px;background:#f5f7fa">Líquido a pagar</th>
+          <th align="center" style="padding:8px;background:#f5f7fa">NF</th>
+        </tr></thead>
+        <tbody>${rows || `<tr><td colspan="7" style="padding:10px;border-top:1px solid #e5e7eb">Nenhum item no lote.</td></tr>`}</tbody>
+      </table>
+      ${pendentesNf.length ? `<p style="font-size:12px;color:#991b1b;margin-top:8px"><strong>Pendências fora do lote:</strong> ${escapeHtml(pendentesNf.slice(0, 12).join(", "))}${pendentesNf.length > 12 ? "..." : ""}</p>` : ""}
+    </div>
+  `;
+  return approvalDemonstrativoShell({
+    eyebrow: "Demonstrativo de folha PJ",
+    title: `Folha PJ ${competencia}${lote?.numero ? ` - Lote ${lote.numero}` : ""}`,
+    subtitle: `${itens.length} prestador(es) apto(s) para pagamento`,
+    stats: [
+      { label: "Itens", value: String(itens.length) },
+      { label: "Valor NF", value: formatCurrency(totalNf) },
+      { label: "Adiantamentos", value: formatCurrency(totalAdiantamentos) },
+      { label: "Total a pagar", value: formatCurrency(totalPagar) },
+    ],
+    body,
+  });
+}
+
+async function renderAdiantamentoApprovalEmailDemonstrativo(adiantamentoInput) {
+  const [[adiantamento]] = await pool.query(
+    `SELECT a.*, p.nome, p.razao_social, p.cpf, p.cnpj, p.email
+       FROM adiantamentos a
+       JOIN prestadores p ON p.id = a.prestador_id
+      WHERE a.id = ?`,
+    [adiantamentoInput.id],
+  );
+  if (!adiantamento) return "";
+  const [parcelas] = await pool.query(
+    "SELECT numero_parcela, competencia, valor, descontado FROM adiantamento_parcelas WHERE adiantamento_id = ? ORDER BY numero_parcela",
+    [adiantamento.id],
+  );
+  const aprovacoes = await getAdiantamentoApprovals(adiantamento);
+  const body = `
+    <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+      <strong>Dados do prestador</strong>
+      ${approvalMiniTable([
+        ["Razão social", escapeHtml(adiantamento.razao_social || "")],
+        ["Prestador", escapeHtml(adiantamento.nome || "")],
+        ["CPF/CNPJ", escapeHtml([adiantamento.cpf, adiantamento.cnpj].filter(Boolean).join(" / "))],
+        ["Observação", escapeHtml(adiantamento.observacao || "")],
+      ])}
+    </div>
+    <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+      <strong>Parcelamento</strong>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">
+        <thead><tr><th align="left" style="padding:8px;background:#f5f7fa">Parcela</th><th align="left" style="padding:8px;background:#f5f7fa">Competência</th><th align="right" style="padding:8px;background:#f5f7fa">Valor</th><th align="left" style="padding:8px;background:#f5f7fa">Status</th></tr></thead>
+        <tbody>${parcelas.map((p) => `<tr><td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(p.numero_parcela)}</td><td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(p.competencia)}</td><td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right">${formatCurrency(p.valor)}</td><td style="padding:8px;border-top:1px solid #e5e7eb">${Number(p.descontado || 0) ? "Descontada" : "Em aberto"}</td></tr>`).join("")}</tbody>
+      </table>
+      ${aprovacoes?.aprovadores?.length ? `<p style="font-size:12px;color:#667085">Aprovações já registradas: ${escapeHtml(aprovacoes.aprovadores.map((a) => a.nome).join(", "))}</p>` : ""}
+    </div>
+  `;
+  return approvalDemonstrativoShell({
+    eyebrow: "Autorização de adiantamento PJ",
+    title: omieAdiantamentoDocumento(adiantamento),
+    subtitle: adiantamento.razao_social || adiantamento.nome || "",
+    stats: [
+      { label: "Data", value: formatDateBr(adiantamento.data_adiantamento) },
+      { label: "Valor", value: formatCurrency(adiantamento.valor_total) },
+      { label: "Parcelas", value: String(adiantamento.parcelas || 1) },
+      { label: "Primeiro desconto", value: adiantamento.competencia_inicial || "-" },
+    ],
+    body,
+  });
+}
+
+async function renderRescisaoApprovalEmailDemonstrativo(rescisaoInput) {
+  const [[rescisao]] = await pool.query(
+    `SELECT r.*, p.nome, p.razao_social, p.cpf, p.cnpj, p.email
+       FROM rescisoes r
+       JOIN prestadores p ON p.id = r.prestador_id
+      WHERE r.id = ?`,
+    [rescisaoInput.id],
+  );
+  if (!rescisao) return "";
+  const aprovacoes = await getRescisaoApprovals(rescisao);
+  const proventos = money(rescisao.valor_proporcional) + Math.max(money(rescisao.valor_multa), 0);
+  const descontos = money(rescisao.adiantamentos_abertos) + money(rescisao.descontos_manual) + Math.abs(Math.min(money(rescisao.valor_multa), 0));
+  const body = `
+    <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+      <strong>Dados do prestador</strong>
+      ${approvalMiniTable([
+        ["Razão social", escapeHtml(rescisao.razao_social || "")],
+        ["Prestador", escapeHtml(rescisao.nome || "")],
+        ["CPF/CNPJ", escapeHtml([rescisao.cpf, rescisao.cnpj].filter(Boolean).join(" / "))],
+        ["Motivo", escapeHtml(rescisao.motivo || "")],
+        ["Aviso", escapeHtml(`${formatDateBr(rescisao.data_aviso)} | ${rescisao.aviso_dias || 0} dias | ${Number(rescisao.aviso_cumprido || 0) ? "cumprido" : "não cumprido"}`)],
+      ])}
+    </div>
+    <div style="padding:14px 16px;border-top:1px solid #e5e7eb">
+      <strong>Memória de cálculo</strong>
+      ${approvalMiniTable([
+        ["R$ Contrato", formatCurrency(rescisao.salario_base)],
+        ["Dias trabalhados", escapeHtml(`${rescisao.dias_trabalhados || 0}/${rescisao.dias_mes || 0}`)],
+        ["Valor proporcional", formatCurrency(rescisao.valor_proporcional)],
+        ["Multa rescisão", formatCurrency(rescisao.valor_multa)],
+        ["Adiantamentos", formatCurrency(rescisao.adiantamentos_abertos)],
+        ["Descontos manuais", formatCurrency(rescisao.descontos_manual)],
+        ["Total a pagar", formatCurrency(rescisao.valor_total_pagar), true],
+      ])}
+      ${aprovacoes?.aprovadores?.length ? `<p style="font-size:12px;color:#667085">Aprovações já registradas: ${escapeHtml(aprovacoes.aprovadores.map((a) => a.nome).join(", "))}</p>` : ""}
+    </div>
+  `;
+  return approvalDemonstrativoShell({
+    eyebrow: "Demonstrativo de rescisão PJ",
+    title: "Rescisão de contrato",
+    subtitle: rescisao.razao_social || rescisao.nome || "",
+    stats: [
+      { label: "Competência", value: rescisao.competencia || "-" },
+      { label: "Data", value: formatDateBr(rescisao.data_rescisao) },
+      { label: "Proventos", value: formatCurrency(proventos) },
+      { label: "Descontos", value: formatCurrency(descontos) },
+      { label: "Total", value: formatCurrency(rescisao.valor_total_pagar) },
+    ],
+    body,
+  });
+}
+
+function isFinanceActionUser(user) {
+  if (!user?.ativo) return false;
+  if (user.perfil === "financeiro") return true;
+  if (["master", "administrador"].includes(user.perfil)) return false;
+  return hasPermission(user, "integrate_omie") || hasPermission(user, "reembolso_financeiro") || hasPermission(user, "reembolso_integrar_omie");
+}
+
+async function getFinanceActionUsers(db = pool) {
+  const [users] = await db.query(
+    "SELECT id, nome, email, perfil, permissoes_json, ativo FROM usuarios WHERE ativo = 1 AND email IS NOT NULL AND email <> '' ORDER BY nome",
+  );
+  const seen = new Set();
+  return users.filter((user) => {
+    const email = String(user.email || "").trim().toLowerCase();
+    if (!email || seen.has(email) || !isFinanceActionUser(user)) return false;
+    seen.add(email);
+    return true;
+  });
+}
+
+async function sendFinanceActionEmail(req, { titulo, detalhe, link }) {
+  if (!emailConfigured()) return { sent: false, reason: "E-mail nao configurado.", enviados: [], falhas: [] };
+  const users = await getFinanceActionUsers();
+  const enviados = [];
+  const falhas = [];
+  const safeLink = publicUrl(link || appUrl(req, "/"));
+  for (const user of users) {
+    const email = String(user.email || "").trim();
+    try {
+      await sendMailMessage({
+        to: email,
+        subject: `Acao financeira pendente - ${titulo}`,
+        html: `
+          <p>Ola, ${escapeHtml(user.nome || "Financeiro")}.</p>
+          <p><strong>${escapeHtml(titulo)}</strong> foi aprovado e esta aguardando uma acao do financeiro.</p>
+          <div style="margin:16px 0;padding:14px;border:1px solid #d7dde6;border-radius:6px;background:#f8fafc">
+            <strong style="display:block;margin-bottom:10px;color:#0b1726">Resumo</strong>
+            <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">
+              <tr><td style="width:120px;padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Processo</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(titulo)}</td></tr>
+              <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Detalhe</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(detalhe || "")}</td></tr>
+              <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Link</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(safeLink)}</td></tr>
+            </table>
+          </div>
+          <p><a href="${escapeHtml(safeLink)}" style="display:inline-block;background:#002b5f;color:#fff;text-decoration:none;padding:10px 14px;border-radius:4px;font-weight:700">Abrir sistema</a></p>
+        `,
+      });
+      enviados.push({ id: user.id, nome: user.nome, email });
+    } catch (error) {
+      falhas.push({ id: user.id, nome: user.nome, email, erro: error.message });
+    }
+  }
+  return { sent: enviados.length > 0, enviados, falhas, total: users.length };
 }
 
 function assertSequentialApprover(user, aprovacoes) {
@@ -3122,7 +3938,7 @@ async function createFolhaLote(competencia, itens, userId, db = pool) {
   const [result] = await db.query(
     `INSERT INTO folha_lotes (folha_id, competencia, numero, status, payload_hash, itens_json, criado_por)
      VALUES (?, ?, ?, 'em_aprovacao', ?, ?, ?)`,
-    [folha.id, competencia, numero, initialPayloadHash, JSON.stringify(normalizeApprovalItems(itens)), userId || null],
+    [folha.id, competencia, numero, initialPayloadHash, JSON.stringify(itens || []), userId || null],
   );
   const loteId = result.insertId;
   const payloadHash = approvalPayloadHash(competencia, itens, loteId);
@@ -3143,8 +3959,8 @@ async function autoCloseApprovedFolha(competencia, itens, db = pool, loteId = nu
   if (!approvedIds.size) throw new Error("Nenhum item apto para fechar no lote.");
   await db.query(
     `INSERT INTO folhas (competencia, dias_mes, status, fechado_em)
-     VALUES (?, ?, 'aberta', NOW())
-     ON DUPLICATE KEY UPDATE dias_mes = VALUES(dias_mes), fechado_em = NOW(), approval_rejeitado_por = NULL, approval_rejeitado_em = NULL, approval_rejeicao_motivo = NULL`,
+     VALUES (?, ?, 'fechada', NOW())
+     ON DUPLICATE KEY UPDATE dias_mes = VALUES(dias_mes), status = 'fechada', fechado_em = NOW(), approval_rejeitado_por = NULL, approval_rejeitado_em = NULL, approval_rejeicao_motivo = NULL`,
     [competencia, diasMes],
   );
   const [[folha]] = await db.query("SELECT id FROM folhas WHERE competencia = ?", [competencia]);
@@ -3159,7 +3975,7 @@ async function autoCloseApprovedFolha(competencia, itens, db = pool, loteId = nu
 
   const [prestadores] = await db.query(
     `SELECT p.*, COALESCE(cli.nome, u.nome) AS unidade_nome, fn.nome AS funcao, c.nome AS categoria,
-      c.omie_codigo AS categoria_omie_codigo, d.nome AS departamento, pr.nome AS projeto
+      c.omie_codigo AS categoria_omie_codigo, d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
      FROM prestadores p
      LEFT JOIN unidades u ON u.id = p.unidade_id
      LEFT JOIN clientes cli ON cli.id = p.cliente_id
@@ -3254,13 +4070,14 @@ async function autoCloseApprovedFolha(competencia, itens, db = pool, loteId = nu
   if (loteId) {
     await db.query("UPDATE folha_lotes SET status = 'fechado', aprovado_em = NOW(), fechado_em = NOW() WHERE id = ?", [loteId]);
   }
-  await db.query("UPDATE folhas SET status = 'aberta' WHERE id = ?", [folha.id]);
+  await db.query("UPDATE folhas SET status = 'fechada', fechado_em = NOW() WHERE id = ?", [folha.id]);
 }
 
 function isEndMonthNfReminderWindow(competencia, referenceDate = new Date()) {
   const [year, month] = String(competencia || "").split("-").map(Number);
   if (!year || !month) return false;
-  const start = new Date(year, month - 1, daysInCompetencia(competencia) - 2);
+  const daysBefore = Math.min(Math.max(Number(process.env.NF_FOLLOWUP_DAYS_BEFORE || 3), 1), 15);
+  const start = new Date(year, month - 1, daysInCompetencia(competencia) - daysBefore + 1);
   const end = new Date(year, month - 1, daysInCompetencia(competencia), 23, 59, 59, 999);
   return referenceDate >= start && referenceDate <= end;
 }
@@ -3400,6 +4217,7 @@ function omieEndpoint(service) {
     clientes: "https://app.omie.com.br/api/v1/geral/clientes/",
     contaPagar: "https://app.omie.com.br/api/v1/financas/contapagar/",
     contaCorrente: "https://app.omie.com.br/api/v1/geral/contacorrente/",
+    contaCorrenteLancamentos: "https://app.omie.com.br/api/v1/financas/contacorrentelancamentos/",
     categorias: "https://app.omie.com.br/api/v1/geral/categorias/",
     projetos: "https://app.omie.com.br/api/v1/geral/projetos/",
     departamentos: "https://app.omie.com.br/api/v1/geral/departamentos/",
@@ -3408,25 +4226,99 @@ function omieEndpoint(service) {
   return endpoints[service];
 }
 
+const omieCallCache = new Map();
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function omieCallCacheKey(service, call, params = {}) {
+  return `${service}:${call}:${stableStringify(params)}`;
+}
+
+function omieCacheTtlMs(call) {
+  if (/^Listar|^Consultar|^Obter/i.test(call)) return 5 * 60 * 1000;
+  return 70 * 1000;
+}
+
 async function omieCall(service, call, params = {}) {
   if (!omieConfigured()) throw new Error("Omie ainda nao esta configurado.");
   const delayMs = Number(process.env.OMIE_REQUEST_DELAY_MS || 1200);
-  if (delayMs > 0) await sleep(delayMs);
-  const response = await fetch(omieEndpoint(service), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      call,
-      app_key: process.env.OMIE_APP_KEY,
-      app_secret: process.env.OMIE_APP_SECRET,
-      param: [params],
-    }),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data.faultstring || data.faultcode) {
-    throw new Error(data.faultstring || data.message || `Falha na API Omie (${call}).`);
+  const maxAttempts = Math.max(1, Number(process.env.OMIE_MAX_RETRIES || 4));
+  const timeoutMs = Number(process.env.OMIE_REQUEST_TIMEOUT_MS || 45000);
+  const cacheKey = omieCallCacheKey(service, call, params);
+  const cached = omieCallCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    if (cached.promise) return cached.promise;
+    if (cached.ok) return cached.data;
+    const waitSeconds = Math.max(1, Math.ceil((cached.expiresAt - now) / 1000));
+    const cachedError = new Error(`Chamada Omie ${call} em pausa local por ${waitSeconds}s para evitar consumo redundante.`);
+    cachedError.httpStatus = cached.error?.httpStatus || null;
+    cachedError.omieCall = call;
+    throw cachedError;
   }
-  return data;
+  const promise = (async () => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (delayMs > 0) await sleep(delayMs);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    let data;
+    try {
+      response = await fetch(omieEndpoint(service), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          call,
+          app_key: process.env.OMIE_APP_KEY,
+          app_secret: process.env.OMIE_APP_SECRET,
+          param: [params],
+        }),
+      });
+      data = await response.json().catch(() => ({}));
+    } catch (error) {
+      if (error.name === "AbortError") {
+        const timeoutError = new Error(`Tempo limite excedido na API Omie (${call}) apos ${timeoutMs}ms. Tente novamente apos a janela de bloqueio.`);
+        timeoutError.httpStatus = "timeout";
+        timeoutError.omieCall = call;
+        throw timeoutError;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (response.ok && !data.faultstring && !data.faultcode) return data;
+    const message = data.faultstring || data.message || `Falha na API Omie (${call}).`;
+    const error = new Error(`HTTP ${response.status} - ${message}`);
+    error.httpStatus = response.status;
+    error.omieCall = call;
+    error.omieFaultCode = data.faultcode || null;
+    if (!isOmieRateLimitError(error) || attempt >= maxAttempts) throw error;
+    const retrySeconds = parseOmieRetrySeconds(error.message) || 15;
+    await sleep((retrySeconds + 2) * 1000);
+  }
+  throw new Error(`Falha na API Omie (${call}).`);
+  })();
+  omieCallCache.set(cacheKey, { promise, expiresAt: now + omieCacheTtlMs(call) });
+  try {
+    const data = await promise;
+    omieCallCache.set(cacheKey, { ok: true, data, expiresAt: Date.now() + omieCacheTtlMs(call) });
+    return data;
+  } catch (error) {
+    const retrySeconds = parseOmieRetrySeconds(error.message) || (Number(error.httpStatus) === 425 ? 30 * 60 : 60);
+    if (isOmieRateLimitError(error) || Number(error.httpStatus) === 425) {
+      omieCallCache.set(cacheKey, { ok: false, error, expiresAt: Date.now() + (retrySeconds * 1000) });
+    } else {
+      omieCallCache.delete(cacheKey);
+    }
+    throw error;
+  }
 }
 
 function sleep(ms) {
@@ -3434,7 +4326,7 @@ function sleep(ms) {
 }
 
 function isOmieRateLimitError(error) {
-  return /bloquead[ao] por consumo indevido|tente novamente em/i.test(String(error?.message || ""));
+  return /bloquead[ao] por consumo indevido|tente novamente em|consumo redundante detectado|redundant/i.test(String(error?.message || ""));
 }
 
 function isOmieStructuralError(error) {
@@ -3459,6 +4351,12 @@ function normalizeLookupText(value) {
 function formatOmieDate(isoDate) {
   const [year, month, day] = String(isoDate).split("-");
   return `${day}/${month}/${year}`;
+}
+
+function dateOnly(value) {
+  if (!value) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
 }
 
 const crcTable = (() => {
@@ -3561,6 +4459,33 @@ async function omieIncluirAnexo({ nId, cCodIntAnexo, cNomeArquivo, content }) {
   return result;
 }
 
+async function omieIncluirAnexoTabela({ nId, cCodIntAnexo, cNomeArquivo, content, cTabela = "conta-pagar" }) {
+  const fileName = sanitizeOmieFileName(cNomeArquivo);
+  const zip = zipSingleFile(fileName, content);
+  const encodedZip = zip.toString("base64");
+  const payload = {
+    cCodIntAnexo: String(cCodIntAnexo).slice(0, 20),
+    cTabela,
+    nId: Number(nId),
+    cNomeArquivo: fileName,
+    cTipoArquivo: path.extname(fileName).replace(".", "").toUpperCase().slice(0, 10),
+    cArquivo: encodedZip,
+    cMd5: crypto.createHash("md5").update(encodedZip).digest("hex"),
+  };
+  const result = await omieCall("anexo", "IncluirAnexo", payload);
+  if (/cadastrad|existe|duplic/i.test(String(result?.cDesStatus || result?.message || "")) && result?.nIdAnexo) {
+    await omieCall("anexo", "ExcluirAnexo", {
+      cCodIntAnexo: payload.cCodIntAnexo,
+      cTabela: payload.cTabela,
+      nId: payload.nId,
+      nIdAnexo: result.nIdAnexo,
+      cNomeArquivo: payload.cNomeArquivo,
+    });
+    return omieCall("anexo", "IncluirAnexo", payload);
+  }
+  return result;
+}
+
 function browserExecutablePath() {
   const candidates = [
     process.env.CHROME_PATH,
@@ -3608,7 +4533,7 @@ function formatDateBr(value) {
 function renderFolhaItemReportHtml(item, competencia) {
   const proventos = money(item.valor_dias) + money(item.adicoes) + money(item.bonus);
   const descontos = money(item.descontos_manual) + money(item.desconto_adiantamentos);
-  const diferencaNf = money(item.valor_nf_emitida) - money(item.liquido_pagar);
+  const diferencaNf = folhaNfDifference(item);
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
     @page{size:A4;margin:9mm}*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;margin:0;color:#061426;background:#fff;font-size:12px}.head{background:#141923;color:#fff;display:grid;grid-template-columns:185px 1fr 170px;gap:18px;align-items:center;padding:18px}.brand{display:flex;align-items:center;gap:10px}.mark{width:38px;height:38px;border:4px solid #fff;display:grid;place-items:center;font-size:24px;font-weight:900}.brand strong{font-size:26px;line-height:1}.brand small,.head small{display:block;color:#dbe4ef;text-transform:uppercase;font-weight:800;letter-spacing:.04em}.head h1{margin:4px 0 0;font-size:24px}.meta{text-align:right}.meta strong{display:block;font-size:18px}.summary{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid #d7dde6}.summary article{padding:13px;border-right:1px solid #d7dde6}.summary span{display:block;color:#667085;text-transform:uppercase;font-weight:900;font-size:11px}.summary strong{display:block;margin-top:5px;font-size:17px}.section-title{display:flex;justify-content:space-between;align-items:end;padding:16px 8px 8px}.section-title h2{font-size:17px;margin:0}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d7dde6;padding:8px;text-align:left;vertical-align:top}th{background:#f3f6f9;text-transform:uppercase;font-size:11px}.num{text-align:right;white-space:nowrap}.two-col{display:grid;grid-template-columns:1fr 1fr;gap:0;margin-top:14px}.total-row td,.total-row th{font-weight:900;background:#f8fafc}.footer{display:flex;justify-content:space-between;padding:14px 6px;color:#667085;font-size:10px}
   </style></head><body><main>
@@ -3626,6 +4551,45 @@ async function buildFolhaItemReportPdf(item, competencia) {
   return htmlToPdfBuffer(renderFolhaItemReportHtml(item, competencia));
 }
 
+function renderAdiantamentoPjReportHtml(adiantamento, aprovacoes, parcelas) {
+  const aprovado = aprovacoes?.approved;
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
+    @page{size:A4;margin:9mm}*{box-sizing:border-box}body{font-family:Segoe UI,Arial,sans-serif;margin:0;color:#061426;background:#fff;font-size:12px}.head{background:#141923;color:#fff;display:grid;grid-template-columns:185px 1fr 170px;gap:18px;align-items:center;padding:18px}.brand{display:flex;align-items:center;gap:10px}.mark{width:38px;height:38px;border:4px solid #fff;display:grid;place-items:center;font-size:24px;font-weight:900}.brand strong{font-size:26px;line-height:1}.brand small,.head small{display:block;color:#dbe4ef;text-transform:uppercase;font-weight:800;letter-spacing:.04em}.head h1{margin:4px 0 0;font-size:24px}.meta{text-align:right}.meta strong{display:block;font-size:18px}.summary{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #d7dde6}.summary article{padding:13px;border-right:1px solid #d7dde6}.summary span{display:block;color:#667085;text-transform:uppercase;font-weight:900;font-size:11px}.summary strong{display:block;margin-top:5px;font-size:17px}.section-title{display:flex;justify-content:space-between;align-items:end;padding:16px 8px 8px}.section-title h2{font-size:17px;margin:0}table{width:100%;border-collapse:collapse}th,td{border:1px solid #d7dde6;padding:8px;text-align:left;vertical-align:top}th{background:#f3f6f9;text-transform:uppercase;font-size:11px}.num{text-align:right;white-space:nowrap}.approval-ok{font-weight:900;color:#065f46}.footer{display:flex;justify-content:space-between;padding:14px 6px;color:#667085;font-size:10px}
+  </style></head><body><main>
+    <header class="head"><div class="brand"><div class="mark">R</div><div><strong>redefrete</strong><small>Redefrete Logistica</small></div></div><div><small>Autorizacao de adiantamento PJ</small><h1>Adiantamento ao fornecedor</h1></div><div class="meta"><small>Documento</small><strong>${escapeHtml(omieAdiantamentoDocumento(adiantamento))}</strong><span>${escapeHtml(adiantamento.omie_codigo_integracao || omieAdiantamentoIntegracaoCode(adiantamento))}</span></div></header>
+    <section class="summary"><article><span>Data</span><strong>${escapeHtml(formatDateBr(adiantamento.data_adiantamento))}</strong></article><article><span>Valor</span><strong>${formatCurrency(adiantamento.valor_total)}</strong></article><article><span>Parcelas</span><strong>${escapeHtml(adiantamento.parcelas || 1)}</strong></article><article><span>Status</span><strong>${aprovado ? "Aprovado" : "Pendente"}</strong></article></section>
+    <div class="section-title"><h2>Dados do prestador</h2><span>Gerado em ${escapeHtml(new Date().toLocaleString("pt-BR"))}</span></div>
+    <table><tbody><tr><th>Razao social</th><td>${escapeHtml(adiantamento.razao_social || "")}</td><th>Prestador</th><td>${escapeHtml(adiantamento.nome || "")}</td></tr><tr><th>CPF/CNPJ</th><td>${escapeHtml([adiantamento.cpf, adiantamento.cnpj].filter(Boolean).join(" / "))}</td><th>E-mail</th><td>${escapeHtml(adiantamento.email || "")}</td></tr><tr><th>Observacao</th><td colspan="3">${escapeHtml(adiantamento.observacao || "")}</td></tr></tbody></table>
+    <div class="section-title"><h2>Parcelamento</h2><span>Primeiro desconto ${escapeHtml(adiantamento.competencia_inicial || "")}</span></div>
+    <table><thead><tr><th>Parcela</th><th>Competencia</th><th class="num">Valor</th><th>Status</th></tr></thead><tbody>${parcelas.map((p) => `<tr><td>${escapeHtml(p.numero_parcela)}</td><td>${escapeHtml(p.competencia)}</td><td class="num">${formatCurrency(p.valor)}</td><td>${Number(p.descontado || 0) ? "Descontada" : "Em aberto"}</td></tr>`).join("")}</tbody></table>
+    <div class="section-title"><h2>Aprovacoes</h2><span>${aprovado ? "Fluxo completo" : "Fluxo pendente"}</span></div>
+    <table><thead><tr><th>Aprovador</th><th>E-mail</th><th>Data</th><th>Autenticacao</th></tr></thead><tbody>${(aprovacoes?.aprovadores || []).map((a) => `<tr><td>${escapeHtml(a.nome)}</td><td>${escapeHtml(a.email)}</td><td>${escapeHtml(a.aprovado_em ? new Date(a.aprovado_em).toLocaleString("pt-BR") : "")}</td><td class="approval-ok">${escapeHtml(a.codigo_autenticacao || "")}</td></tr>`).join("") || `<tr><td colspan="4">Sem aprovacoes registradas.</td></tr>`}</tbody></table>
+    <footer class="footer"><span>Redefrete Logistica | Adiantamento PJ</span><span>${escapeHtml(omieAdiantamentoDocumento(adiantamento))}</span></footer>
+  </main></body></html>`;
+}
+
+async function buildAdiantamentoPjReportPdf(adiantamento) {
+  const aprovacoes = await getAdiantamentoApprovals(adiantamento);
+  const [parcelas] = await pool.query(
+    "SELECT numero_parcela, competencia, valor, descontado FROM adiantamento_parcelas WHERE adiantamento_id = ? ORDER BY numero_parcela",
+    [adiantamento.id],
+  );
+  return htmlToPdfBuffer(renderAdiantamentoPjReportHtml(adiantamento, aprovacoes, parcelas));
+}
+
+async function enviarAnexoAdiantamentoPjOmie(adiantamento, lancamentoId) {
+  if (!lancamentoId) throw new Error("Codigo do lancamento Omie nao retornado para anexar o demonstrativo do adiantamento.");
+  const documento = omieAdiantamentoDocumento(adiantamento);
+  const retorno = await omieIncluirAnexoTabela({
+    nId: lancamentoId,
+    cTabela: "conta-corrente-lancamento",
+    cCodIntAnexo: `ADPJ${adiantamento.id}REL`,
+    cNomeArquivo: `autorizacao-${documento}.pdf`,
+    content: await buildAdiantamentoPjReportPdf(adiantamento),
+  });
+  return [{ nome: `autorizacao-${documento}.pdf`, retorno }];
+}
+
 async function enviarAnexosFolhaItemOmie(item, competencia, contaPagarId) {
   if (!contaPagarId) return [];
   const anexos = [];
@@ -3636,26 +4600,277 @@ async function enviarAnexosFolhaItemOmie(item, competencia, contaPagarId) {
     content: await buildFolhaItemReportPdf(item, competencia),
   }));
 
+  const nfAnexo = await enviarAnexoNfFolhaItemOmie(item, competencia, contaPagarId);
+  if (nfAnexo) anexos.push(nfAnexo);
+  return anexos;
+}
+
+async function enviarAnexoNfFolhaItemOmie(item, competencia, contaPagarId) {
+  if (!contaPagarId) return null;
+  try {
+    const [[nf]] = await pool.query(
+      `SELECT original_name, stored_name
+         FROM nf_arquivos
+        WHERE (
+            folha_item_id = ?
+            OR (
+              prestador_id = ?
+              AND competencia = ?
+              AND status = 'validada'
+              AND (
+                ? = ''
+                OR TRIM(LEADING '0' FROM COALESCE(numero_nf, '')) = TRIM(LEADING '0' FROM ?)
+              )
+            )
+          )
+          AND stored_name IS NOT NULL
+        ORDER BY CASE
+            WHEN LOWER(COALESCE(original_name, stored_name)) LIKE '%.pdf' OR mime_type = 'application/pdf' THEN 0
+            ELSE 1
+          END, id DESC
+        LIMIT 1`,
+      [
+        item.folha_item_id,
+        item.prestador_id,
+        competencia,
+        String(item.numero_nf || "").trim(),
+        String(item.numero_nf || "").trim(),
+      ],
+    );
+    if (!nf) {
+      await pool.query(
+        "UPDATE folha_itens SET omie_nf_anexo_status = 'erro', omie_nf_anexo_erro = ? WHERE id = ?",
+        ["NF validada nao localizada para anexar no Omie.", item.folha_item_id],
+      );
+      throw new Error("NF validada nao localizada para anexar no Omie.");
+    }
+    const filePath = path.join(uploadsDir, nf.stored_name);
+    if (!fs.existsSync(filePath)) {
+      await pool.query(
+        "UPDATE folha_itens SET omie_nf_anexo_status = 'erro', omie_nf_anexo_erro = ? WHERE id = ?",
+        [`Arquivo da NF nao encontrado: ${nf.stored_name}`, item.folha_item_id],
+      );
+      throw new Error(`Arquivo da NF nao encontrado: ${nf.stored_name}`);
+    }
+    const retorno = await omieIncluirAnexo({
+      nId: contaPagarId,
+      cCodIntAnexo: `F${item.folha_item_id}NF`,
+      cNomeArquivo: nf.original_name || `nf-${competencia}-${item.folha_item_id}.pdf`,
+      content: fs.readFileSync(filePath),
+    });
+    await pool.query(
+      "UPDATE folha_itens SET omie_nf_anexo_status = 'integrado', omie_nf_anexo_erro = NULL, omie_nf_anexo_em = NOW() WHERE id = ?",
+      [item.folha_item_id],
+    );
+    return retorno;
+  } catch (error) {
+    await pool.query(
+      "UPDATE folha_itens SET omie_nf_anexo_status = 'erro', omie_nf_anexo_erro = ? WHERE id = ?",
+      [error.message || "Falha ao anexar NF no Omie.", item.folha_item_id],
+    );
+    throw error;
+  }
+}
+
+async function listarFolhaOmieIntegrationItems(folhaId, loteId = null, onlyPendingTitulos = true, limit = null) {
+  const params = [folhaId, loteId || null, loteId || null];
+  let limitSql = "";
+  if (limit) {
+    params.push(Number(limit));
+    limitSql = " LIMIT ?";
+  }
+  const [rows] = await pool.query(
+    `SELECT fi.id AS folha_item_id, fi.dias_trabalhados, fi.salario_base, fi.valor_dias, fi.adicoes, fi.bonus,
+      fi.descontos_manual, fi.desconto_adiantamentos, fi.valor_nf_previsto, fi.valor_nf_emitida,
+      fi.numero_nf, fi.liquido_pagar, fi.omie_status, fi.omie_codigo_lancamento, fi.omie_codigo_integracao,
+      fi.omie_baixa_status, fi.omie_nf_anexo_status,
+      p.id AS prestador_id, p.nome, p.razao_social, p.cpf, p.cnpj, p.email, p.telefone,
+      p.banco, p.agencia, p.conta,
+      p.omie_codigo_cliente, p.omie_codigo_integracao AS prestador_omie_codigo_integracao,
+      c.nome AS categoria, c.omie_codigo AS categoria_omie_codigo,
+      d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
+     FROM folha_itens fi
+     JOIN prestadores p ON p.id = fi.prestador_id
+     LEFT JOIN categorias c ON c.id = p.categoria_id
+     LEFT JOIN departamentos d ON d.id = p.departamento_id
+     LEFT JOIN projetos pr ON pr.id = p.projeto_id
+     WHERE fi.folha_id = ?
+       AND COALESCE(NULLIF(fi.valor_nf_emitida, 0), fi.valor_nf_previsto, fi.liquido_pagar) > 0
+       ${onlyPendingTitulos ? "AND fi.omie_status <> 'integrado'" : ""}
+       AND (? IS NULL OR fi.lote_id = ?)
+     ORDER BY p.nome, p.razao_social${limitSql}`,
+    params,
+  );
+  return rows;
+}
+
+async function findValidatedFolhaNf(item, competencia) {
+  const nfNumber = String(item.numero_nf || "").trim();
   const [[nf]] = await pool.query(
-    `SELECT original_name, stored_name
+    `SELECT id, original_name, stored_name, status
        FROM nf_arquivos
-      WHERE folha_item_id = ?
+      WHERE (
+          folha_item_id = ?
+          OR (
+            prestador_id = ?
+            AND competencia = ?
+            AND status = 'validada'
+            AND (
+              ? = ''
+              OR TRIM(LEADING '0' FROM COALESCE(numero_nf, '')) = TRIM(LEADING '0' FROM ?)
+            )
+          )
+        )
+        AND status = 'validada'
+        AND stored_name IS NOT NULL
       ORDER BY id DESC
       LIMIT 1`,
-    [item.folha_item_id],
+    [item.folha_item_id, item.prestador_id, competencia, nfNumber, nfNumber],
   );
-  if (nf) {
-    const filePath = path.join(uploadsDir, nf.stored_name);
-    if (fs.existsSync(filePath)) {
-      anexos.push(await omieIncluirAnexo({
-        nId: contaPagarId,
-        cCodIntAnexo: `F${item.folha_item_id}NF`,
-        cNomeArquivo: nf.original_name || `nf-${competencia}-${item.folha_item_id}.pdf`,
-        content: fs.readFileSync(filePath),
-      }));
+  return nf || null;
+}
+
+function addChecklistEntry(list, nivel, etapa, mensagem, item = null, extra = {}) {
+  list.push({
+    nivel,
+    etapa,
+    mensagem,
+    prestador: item ? (item.razao_social || item.nome || "") : "",
+    prestador_id: item?.prestador_id || null,
+    folha_item_id: item?.folha_item_id || null,
+    ...extra,
+  });
+}
+
+async function buildFolhaOmieChecklist({ competencia, loteId = null, user = null }) {
+  const erros = [];
+  const avisos = [];
+  const ok = [];
+  if (!omieConfigured()) {
+    addChecklistEntry(erros, "erro", "Configuração", "Configure App Key e App Secret da Omie antes de integrar.");
+  } else {
+    addChecklistEntry(ok, "ok", "Configuração", "Credenciais Omie configuradas.");
+  }
+  const contaCorrenteId = Number(process.env.OMIE_CONTA_CORRENTE_ID || 0) || null;
+  if (!contaCorrenteId) {
+    addChecklistEntry(erros, "erro", "Configuração", "Configure OMIE_CONTA_CORRENTE_ID. O checklist nao consulta o Omie para descobrir a conta.");
+  } else {
+    addChecklistEntry(ok, "ok", "Configuração", "Conta corrente Omie configurada.", null, { valor: contaCorrenteId });
+  }
+
+  const [[folha]] = await pool.query("SELECT * FROM folhas WHERE competencia = ?", [competencia]);
+  if (!folha) {
+    addChecklistEntry(erros, "erro", "Folha", "Folha nao encontrada.");
+    return { competencia, lote_id: loteId ? Number(loteId) : null, aprovado: false, erros, avisos, ok, pendencias: {}, resumo: {} };
+  }
+
+  const [[loteFechado]] = await pool.query(
+    "SELECT id, nome, status FROM folha_lotes WHERE competencia = ? AND status = 'fechado' AND id = COALESCE(?, id) LIMIT 1",
+    [competencia, loteId || null],
+  );
+  const loteEfetivoId = loteId || loteFechado?.id || null;
+  if (folha.status !== "fechada" && !loteFechado) {
+    addChecklistEntry(erros, "erro", "Status", "Somente folhas fechadas ou lotes fechados podem ser integrados na Omie.");
+  } else {
+    addChecklistEntry(ok, "ok", "Status", loteFechado ? `Lote fechado pronto para auditoria: ${loteFechado.nome || loteFechado.id}.` : "Folha fechada pronta para auditoria.");
+  }
+
+  const approvalItems = await listarFolhaOmieIntegrationItems(folha.id, loteEfetivoId, false);
+  const aprovacaoItemsPayload = approvalItems.map((item) => ({
+    prestador_id: item.prestador_id,
+    dias_trabalhados: item.dias_trabalhados,
+    adicoes: item.adicoes,
+    bonus: item.bonus,
+    descontos_manual: item.descontos_manual,
+    valor_nf_emitida: item.valor_nf_emitida,
+    numero_nf: item.numero_nf,
+  }));
+  const aprovacoes = await getFolhaApprovalsForItems(competencia, aprovacaoItemsPayload, pool, loteEfetivoId);
+  if (!aprovacoes.approved) {
+    addChecklistEntry(erros, "erro", "Aprovações", `Fluxo ainda nao aprovado: ${aprovacoes.count || 0}/${aprovacoes.required || 0}. Proximo: ${aprovacoes.proximo?.nome || "nao definido"}.`);
+  } else {
+    addChecklistEntry(ok, "ok", "Aprovações", `Fluxo aprovado: ${aprovacoes.count}/${aprovacoes.required}.`);
+  }
+
+  const itensPendentes = approvalItems
+    .filter((item) => item.omie_status !== "integrado")
+    .map((item) => folhaItemSnapshot(item, folha));
+  const itensIntegrados = approvalItems
+    .filter((item) => item.omie_status === "integrado")
+    .map((item) => folhaItemSnapshot(item, folha));
+  const baixasPendentes = itensIntegrados.filter((item) => money(item.desconto_adiantamentos) > 0 && item.omie_baixa_status !== "integrado");
+  const anexosPendentes = itensIntegrados.filter((item) => item.omie_codigo_lancamento && item.omie_nf_anexo_status !== "integrado");
+  const contaAdiantamentoFornecedorId = resolveOmieContaAdiantamentoFornecedorId();
+  const totalPendencias = itensPendentes.length + baixasPendentes.length + anexosPendentes.length;
+  if (!totalPendencias) {
+    addChecklistEntry(avisos, "aviso", "Pendências", "Nao ha titulos, baixas ou anexos pendentes para enviar ao Omie.");
+  }
+
+  for (const item of itensPendentes) {
+    const label = item.razao_social || item.nome || `Prestador ${item.prestador_id}`;
+    const simoneException = canUseSimoneException(user, item.prestador_id);
+    const cnpj = onlyDigits(item.cnpj);
+    if (!simoneException && (!cnpj || !validateCnpj(cnpj))) addChecklistEntry(erros, "erro", "Prestador", `${label}: CNPJ ausente ou invalido.`, item);
+    if (!simoneException && !Number(item.omie_codigo_cliente || 0)) addChecklistEntry(erros, "erro", "Prestador", `${label}: sem codigo de fornecedor Omie no cadastro local.`, item);
+    if (!/^\d+(?:\.\d+)*$/.test(String(item.categoria_omie_codigo || "").trim())) {
+      addChecklistEntry(erros, "erro", "Categoria", `${label}: categoria sem codigo Omie local.`, item, { categoria: item.categoria || "" });
+    }
+    if (money(item.desconto_adiantamentos) > 0 && !contaAdiantamentoFornecedorId) {
+      addChecklistEntry(erros, "erro", "Adiantamento", `${label}: configure OMIE_CONTA_ADIANTAMENTO_FORNECEDOR_ID para compensar adiantamento ao fornecedor.`, item);
+    }
+    const valorTitulo = money(item.valor_nf_emitida || item.valor_nf_previsto || item.liquido_pagar);
+    if (valorTitulo <= 0) addChecklistEntry(erros, "erro", "Valor", `${label}: valor do titulo precisa ser maior que zero.`, item);
+    if (!nfValidatedOrSimoneException(user, item)) {
+      addChecklistEntry(erros, "erro", "NF", `${label}: NF precisa estar validada antes de integrar.`, item);
+    } else if (!simoneException) {
+      if (!String(item.numero_nf || "").trim()) addChecklistEntry(erros, "erro", "NF", `${label}: numero da NF nao informado.`, item);
+      if (money(item.valor_nf_emitida) <= 0) addChecklistEntry(erros, "erro", "NF", `${label}: valor da NF nao informado.`, item);
+      const nf = await findValidatedFolhaNf(item, competencia);
+      if (!nf) {
+        addChecklistEntry(erros, "erro", "NF", `${label}: arquivo da NF validada nao localizado para anexar.`, item);
+      } else if (!fs.existsSync(path.join(uploadsDir, nf.stored_name))) {
+        addChecklistEntry(erros, "erro", "NF", `${label}: arquivo da NF nao existe no servidor (${nf.stored_name}).`, item);
+      }
+    }
+    if (!omieTransferInfo(item)) addChecklistEntry(avisos, "aviso", "Dados bancários", `${label}: dados bancarios incompletos para transferencia bancaria.`, item);
+  }
+
+  for (const item of baixasPendentes) {
+    const label = item.razao_social || item.nome || `Prestador ${item.prestador_id}`;
+    if (!item.omie_codigo_lancamento) addChecklistEntry(erros, "erro", "Baixa", `${label}: titulo integrado sem codigo de lancamento Omie para baixa.`, item);
+    if (!contaAdiantamentoFornecedorId) addChecklistEntry(erros, "erro", "Baixa", `${label}: configure OMIE_CONTA_ADIANTAMENTO_FORNECEDOR_ID para baixar adiantamento.`, item);
+  }
+
+  for (const item of anexosPendentes) {
+    const label = item.razao_social || item.nome || `Prestador ${item.prestador_id}`;
+    if (!item.omie_codigo_lancamento) addChecklistEntry(erros, "erro", "Anexos", `${label}: titulo integrado sem codigo de lancamento Omie para anexos.`, item);
+    if (!canUseSimoneException(user, item.prestador_id)) {
+      const nf = await findValidatedFolhaNf(item, competencia);
+      if (!nf) addChecklistEntry(erros, "erro", "Anexos", `${label}: NF validada nao localizada para anexar.`, item);
     }
   }
-  return anexos;
+
+  const resumo = {
+    itens_a_integrar: itensPendentes.length,
+    baixas_pendentes: baixasPendentes.length,
+    anexos_pendentes: anexosPendentes.length,
+    valor_a_integrar: itensPendentes.reduce((sum, item) => sum + money(item.valor_nf_emitida || item.valor_nf_previsto || item.liquido_pagar), 0),
+  };
+  return {
+    competencia,
+    lote_id: loteEfetivoId ? Number(loteEfetivoId) : null,
+    aprovado: erros.length === 0,
+    erros,
+    avisos,
+    ok,
+    aprovacoes,
+    pendencias: {
+      titulos: itensPendentes.length,
+      baixas: baixasPendentes.length,
+      anexos: anexosPendentes.length,
+    },
+    resumo,
+  };
 }
 
 function renderRescisaoReportHtml(rescisao, aprovacoes) {
@@ -3770,6 +4985,20 @@ function extractOmieClienteCode(data) {
   ) || null;
 }
 
+function extractOmieClienteBankData(data = {}) {
+  const bank = data.dadosBancarios || data.dados_bancarios || {};
+  return {
+    banco: String(bank.codigo_banco || bank.banco || "").trim(),
+    agencia: String(bank.agencia || bank.codigo_agencia || "").trim(),
+    conta: String(bank.conta_corrente || bank.numero_conta_corrente || bank.conta || "").trim(),
+    pix: String(bank.cChavePix || bank.chave_pix || "").trim() || onlyDigits(bank.doc_titular || data.cnpj_cpf || ""),
+  };
+}
+
+function omieClienteIsInactive(data = {}) {
+  return String(data.inativo || data.bloqueado || "").trim().toUpperCase() === "S";
+}
+
 class OmiePrestadorPendenteError extends Error {
   constructor(prestador) {
     super(`Prestador sem cadastro no Omie: ${prestador.razao_social || prestador.nome}.`);
@@ -3784,15 +5013,54 @@ class OmiePrestadorPendenteError extends Error {
 }
 
 async function findOmieClienteByCpfCnpj(cpfCnpj) {
-  const data = await omieCall("clientes", "ListarClientes", {
-    pagina: 1,
-    registros_por_pagina: 20,
-    apenas_importado_api: "N",
-    clientesFiltro: { cnpj_cpf: cpfCnpj },
-  });
+  const cliente = await getOmieClienteByCpfCnpj(cpfCnpj);
+  return extractOmieClienteCode(cliente || {});
+}
+
+async function getOmieClienteByCpfCnpj(cpfCnpj) {
+  let data;
+  try {
+    data = await omieCall("clientes", "ListarClientes", {
+      pagina: 1,
+      registros_por_pagina: 20,
+      apenas_importado_api: "N",
+      clientesFiltro: { cnpj_cpf: cpfCnpj },
+    });
+  } catch (error) {
+    if (/existem registros/i.test(String(error.message || ""))) return null;
+    throw error;
+  }
   const list = data.clientes_cadastro || data.clientes || data.clientes_cadastro_resumido || [];
   const match = list.find((item) => onlyDigits(item.cnpj_cpf) === onlyDigits(cpfCnpj)) || list[0];
-  return extractOmieClienteCode(match || {});
+  return match || null;
+}
+
+async function updatePrestadorFromOmieCliente(prestadorId, cliente, db = pool) {
+  if (!cliente || !prestadorId) return { updated: false };
+  const codigo = extractOmieClienteCode(cliente);
+  const integracao = String(cliente.codigo_cliente_integracao || "").trim() || null;
+  const bank = extractOmieClienteBankData(cliente);
+  await db.query(
+    `UPDATE prestadores
+        SET omie_codigo_cliente = COALESCE(?, omie_codigo_cliente),
+            omie_codigo_integracao = COALESCE(NULLIF(?, ''), omie_codigo_integracao, ?),
+            banco = COALESCE(NULLIF(?, ''), banco),
+            agencia = COALESCE(NULLIF(?, ''), agencia),
+            conta = COALESCE(NULLIF(?, ''), conta),
+            pix_cpf_cnpj = COALESCE(NULLIF(?, ''), pix_cpf_cnpj)
+      WHERE id = ?`,
+    [
+      codigo || null,
+      integracao,
+      codigo ? `RDF-PREST-${prestadorId}` : null,
+      bank.banco || null,
+      bank.agencia || null,
+      bank.conta || null,
+      bank.pix || null,
+      prestadorId,
+    ],
+  );
+  return { updated: true, codigo, integracao, bank };
 }
 
 function omiePrestadorDadosBancarios(prestador) {
@@ -3812,39 +5080,120 @@ function omiePrestadorDadosBancarios(prestador) {
   };
 }
 
+async function lookupPublicCnpjData(cnpj) {
+  const clean = onlyDigits(cnpj);
+  if (clean.length !== 14) return null;
+  try {
+    const response = await fetch(`https://publica.cnpj.ws/cnpj/${clean}`, {
+      headers: { "User-Agent": "Redefrete-PJ/1.0" },
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+
+function omieEnderecoFromCnpjData(data = {}) {
+  const est = data.estabelecimento || {};
+  const estado = est.estado?.sigla || est.uf || "";
+  const cidade = est.cidade?.nome || est.cidade || "";
+  const logradouro = [est.tipo_logradouro, est.logradouro].filter(Boolean).join(" ").trim();
+  return {
+    endereco: String(logradouro || "").slice(0, 60),
+    endereco_numero: String(est.numero || "S/N").slice(0, 10),
+    complemento: String(est.complemento || "").slice(0, 60),
+    bairro: String(est.bairro || "").slice(0, 60),
+    cep: onlyDigits(est.cep).slice(0, 8),
+    cidade: String(cidade || "").slice(0, 40),
+    estado: String(estado || "").slice(0, 2).toUpperCase(),
+  };
+}
+
 async function ensureOmiePrestador(prestador, options = {}) {
-  if (prestador.omie_codigo_cliente) return Number(prestador.omie_codigo_cliente);
+  if (prestador.omie_codigo_cliente && !options.verifyExisting) return Number(prestador.omie_codigo_cliente);
   const cpfCnpj = prestador.cnpj;
   if (!cpfCnpj) throw new Error("Prestador sem CNPJ para cadastrar na Omie.");
-  const existingCode = await findOmieClienteByCpfCnpj(cpfCnpj);
+  const existingCliente = await getOmieClienteByCpfCnpj(cpfCnpj);
+  const existingCode = extractOmieClienteCode(existingCliente || {});
   if (existingCode) {
-    await pool.query(
-      "UPDATE prestadores SET omie_codigo_cliente = ?, omie_codigo_integracao = COALESCE(omie_codigo_integracao, ?) WHERE id = ?",
-      [existingCode, omiePrestadorIntegrationCode(prestador), prestador.id],
-    );
+    await updatePrestadorFromOmieCliente(prestador.id, existingCliente);
+    if (omieClienteIsInactive(existingCliente)) {
+      throw new Error("Cliente esta inativo no Omie. Consulte o fornecedor e solicite autorizacao antes de reativar.");
+    }
     return existingCode;
   }
   if (!options.allowCreate) throw new OmiePrestadorPendenteError(prestador);
+  const result = await upsertOmiePrestador(prestador);
+  const codigo = extractOmieClienteCode(result) || await findOmieClienteByCpfCnpj(cpfCnpj);
+  if (!codigo) throw new Error("Omie nao retornou o codigo do fornecedor.");
+  const cliente = await getOmieClienteByCpfCnpj(cpfCnpj).catch(() => null);
+  if (cliente) await updatePrestadorFromOmieCliente(prestador.id, cliente);
+  else {
+    await pool.query(
+      "UPDATE prestadores SET omie_codigo_cliente = ?, omie_codigo_integracao = ? WHERE id = ?",
+      [codigo, omiePrestadorIntegrationCode(prestador), prestador.id],
+    );
+  }
+  return codigo;
+}
+
+async function syncPrestadorCadastroOmie(prestador, options = {}) {
+  if (!omieConfigured()) return { synced: false, skipped: true, reason: "Omie nao configurado." };
+  const cpfCnpj = onlyDigits(prestador.cnpj);
+  if (!cpfCnpj || cpfCnpj.length !== 14) return { synced: false, skipped: true, reason: "Prestador sem CNPJ valido." };
+  const cliente = await getOmieClienteByCpfCnpj(cpfCnpj);
+  if (cliente) {
+    const codigo = extractOmieClienteCode(cliente);
+    const inactive = omieClienteIsInactive(cliente);
+    if (inactive) {
+      return { synced: false, action: "omie_inativo", codigo, inactive, reason: "Fornecedor inativo no Omie. Dados locais mantidos; nao reativei nem atualizei o Omie." };
+    }
+    if (options.pushLocalToOmie) {
+      await upsertOmiePrestador({ ...prestador, cnpj: cpfCnpj });
+      const updatedCliente = await getOmieClienteByCpfCnpj(cpfCnpj).catch(() => null);
+      if (updatedCliente) await updatePrestadorFromOmieCliente(prestador.id, updatedCliente);
+      return { synced: true, action: "enviado_ao_omie", codigo, inactive: false };
+    }
+    await updatePrestadorFromOmieCliente(prestador.id, cliente);
+    return { synced: true, action: "atualizado", codigo, inactive: false };
+  }
+  if (!options.allowCreate) return { synced: false, pending: true, reason: "Fornecedor nao encontrado no Omie." };
+  const result = await upsertOmiePrestador({ ...prestador, cnpj: cpfCnpj });
+  const codigo = extractOmieClienteCode(result) || await findOmieClienteByCpfCnpj(cpfCnpj);
+  const created = await getOmieClienteByCpfCnpj(cpfCnpj).catch(() => null);
+  if (created) await updatePrestadorFromOmieCliente(prestador.id, created);
+  else if (codigo) {
+    await pool.query(
+      "UPDATE prestadores SET omie_codigo_cliente = ?, omie_codigo_integracao = COALESCE(omie_codigo_integracao, ?) WHERE id = ?",
+      [codigo, omiePrestadorIntegrationCode(prestador), prestador.id],
+    );
+  }
+  return { synced: true, action: "criado", codigo };
+}
+
+async function upsertOmiePrestador(prestador, extra = {}) {
+  const cpfCnpj = onlyDigits(prestador.cnpj);
   const phone = splitPhone(prestador.telefone);
+  const publicCnpj = await lookupPublicCnpjData(cpfCnpj);
+  const endereco = omieEnderecoFromCnpjData(publicCnpj);
   const payload = {
+    ...extra,
     cnpj_cpf: cpfCnpj,
     razao_social: String(prestador.razao_social || "").slice(0, 60),
     nome_fantasia: String(prestador.razao_social || "").slice(0, 100),
     email: prestador.email || "",
     telefone1_ddd: phone.ddd,
     telefone1_numero: phone.numero,
+    inativo: "N",
     tags: [{ tag: "Fornecedor" }, { tag: "Redefrete PJ" }],
   };
+  Object.entries(endereco).forEach(([key, value]) => {
+    if (value) payload[key] = value;
+  });
   const dadosBancarios = omiePrestadorDadosBancarios(prestador);
   if (dadosBancarios) payload.dadosBancarios = dadosBancarios;
-  const result = await omieCall("clientes", "UpsertClienteCpfCnpj", payload);
-  const codigo = extractOmieClienteCode(result) || await findOmieClienteByCpfCnpj(cpfCnpj);
-  if (!codigo) throw new Error("Omie nao retornou o codigo do fornecedor.");
-  await pool.query(
-    "UPDATE prestadores SET omie_codigo_cliente = ?, omie_codigo_integracao = ? WHERE id = ?",
-    [codigo, omiePrestadorIntegrationCode(prestador), prestador.id],
-  );
-  return codigo;
+  return omieCall("clientes", "UpsertClienteCpfCnpj", payload);
 }
 
 async function resolveOmieContaCorrenteId() {
@@ -3873,6 +5222,15 @@ async function resolveOmieContaCorrenteId() {
 function resolveOmieContaAdiantamentoId() {
   const id = Number(process.env.OMIE_CONTA_ADIANTAMENTO_ID || 0);
   return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function resolveOmieContaAdiantamentoFornecedorId() {
+  const id = Number(process.env.OMIE_CONTA_ADIANTAMENTO_FORNECEDOR_ID || process.env.OMIE_CONTA_ADIANTAMENTO_ID || 0);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function resolveOmieTransferenciaCategoria() {
+  return String(process.env.OMIE_CATEGORIA_TRANSFERENCIA || "0.01").trim();
 }
 
 function extractOmieCategorias(data) {
@@ -3950,7 +5308,6 @@ async function resolveOmieCategoriaCodigo(item) {
   let codigo = String(item.categoria_omie_codigo || "").trim();
   if (/^\d+(?:\.\d+)*$/.test(codigo)) return codigo;
 
-  await syncOmieCategorias();
   const [[categoria]] = await pool.query(
     `SELECT c.nome, c.omie_codigo
      FROM prestadores p
@@ -3972,40 +5329,61 @@ function extractOmieDepartamentos(data) {
   return data.departamentos || data.cadastro || data.lista_departamentos || [];
 }
 
+let omieProjetosCache = null;
+let omieDepartamentosCache = null;
+
 async function resolveOmieProjetoPorNome(nome) {
   if (!nome) return null;
-  const data = await omieCall("projetos", "ListarProjetos", {
-    pagina: 1,
-    registros_por_pagina: 500,
-  });
+  if (!omieProjetosCache) {
+    const data = await omieCall("projetos", "ListarProjetos", {
+      pagina: 1,
+      registros_por_pagina: 500,
+    });
+    omieProjetosCache = extractOmieProjetos(data)
+      .filter((projeto) => projeto.inativo !== "S")
+      .map((projeto) => ({ codigo: projeto.codigo || projeto.nCodProj || projeto.nCodProjeto, nome: projeto.nome || projeto.descricao || "" }));
+  }
   const normalized = normalizeLookupText(nome);
-  const match = extractOmieProjetos(data)
-    .filter((projeto) => projeto.inativo !== "S")
-    .map((projeto) => ({ codigo: projeto.codigo || projeto.nCodProj || projeto.nCodProjeto, nome: projeto.nome || projeto.descricao || "" }))
+  const match = omieProjetosCache
     .find((projeto) => normalizeLookupText(projeto.nome) === normalized);
   return match?.codigo ? String(match.codigo) : null;
 }
 
+async function resolveOmieProjetoCodigo(item = {}) {
+  const codigo = String(item.projeto_omie_codigo || item.omie_projeto_codigo || "").trim();
+  if (codigo) return codigo;
+  return null;
+}
+
 async function resolveOmieDepartamentoPorNome(nome) {
   if (!nome) return null;
-  const departamentos = [];
-  let pagina = 1;
-  let totalPaginas = 1;
-  do {
-    const data = await omieCall("departamentos", "ListarDepartamentos", {
-      pagina,
-      registros_por_pagina: 100,
-    });
-    departamentos.push(...extractOmieDepartamentos(data));
-    totalPaginas = Number(data.total_de_paginas || data.total_paginas || 1);
-    pagina += 1;
-  } while (pagina <= totalPaginas);
+  if (!omieDepartamentosCache) {
+    const departamentos = [];
+    let pagina = 1;
+    let totalPaginas = 1;
+    do {
+      const data = await omieCall("departamentos", "ListarDepartamentos", {
+        pagina,
+        registros_por_pagina: 100,
+      });
+      departamentos.push(...extractOmieDepartamentos(data));
+      totalPaginas = Number(data.total_de_paginas || data.total_paginas || 1);
+      pagina += 1;
+    } while (pagina <= totalPaginas);
+    omieDepartamentosCache = departamentos
+      .filter((departamento) => departamento.inativo !== "S")
+      .map((departamento) => ({ codigo: departamento.codigo || departamento.cCodDep || departamento.cCodDepartamento, nome: departamento.descricao || departamento.nome || "" }));
+  }
   const normalized = normalizeLookupText(nome);
-  const match = departamentos
-    .filter((departamento) => departamento.inativo !== "S")
-    .map((departamento) => ({ codigo: departamento.codigo || departamento.cCodDep || departamento.cCodDepartamento, nome: departamento.descricao || departamento.nome || "" }))
+  const match = omieDepartamentosCache
     .find((departamento) => normalizeLookupText(departamento.nome) === normalized);
   return match?.codigo ? String(match.codigo) : null;
+}
+
+async function resolveOmieDepartamentoCodigo(item = {}) {
+  const codigo = String(item.departamento_omie_codigo || item.omie_departamento_codigo || "").trim();
+  if (codigo) return codigo;
+  return null;
 }
 
 async function listOmieDepartamentos() {
@@ -4076,6 +5454,11 @@ function omieLancamentoIntegracaoCode(competencia, item) {
   return `RDF-FOLHA-${competencia}-${item.folha_item_id}`;
 }
 
+function omieFolhaDocumento(competencia, item) {
+  const cleanCompetencia = String(competencia || "").replace(/\D/g, "");
+  return `FPJ-${cleanCompetencia}-${String(item.folha_item_id || 0).padStart(5, "0")}`.slice(0, 20);
+}
+
 function omieRescisaoIntegracaoCode(rescisao) {
   return `RDF-RESCISAO-${rescisao.competencia}-${rescisao.id}`;
 }
@@ -4083,6 +5466,15 @@ function omieRescisaoIntegracaoCode(rescisao) {
 function omieRescisaoDocumento(rescisao) {
   const year = String(rescisao.data_rescisao || rescisao.competencia || "").slice(0, 4) || new Date().getFullYear();
   return `RES-${year}-${String(rescisao.id || 0).padStart(5, "0")}`.slice(0, 20);
+}
+
+function omieAdiantamentoDocumento(adiantamento) {
+  const year = String(adiantamento.data_adiantamento || "").slice(0, 4) || new Date().getFullYear();
+  return `AD-PJ-${year}-${String(adiantamento.id || 0).padStart(5, "0")}`.slice(0, 20);
+}
+
+function omieAdiantamentoIntegracaoCode(adiantamento) {
+  return `RAPJ${adiantamento.id}`.slice(0, 20);
 }
 
 function applyOmieAllocations(payload, { codigoProjeto, codigoDepartamento }) {
@@ -4110,9 +5502,11 @@ function omieContaPagarPayload({ competencia, item, fornecedorCodigo, contaCorre
     data_previsao: formatOmieDate(vencimento),
     valor_documento: money(item.valor_nf_emitida || item.valor_nf_previsto || item.liquido_pagar),
     codigo_categoria: String(item.categoria_omie_codigo || item.categoria || "").trim(),
+    numero_documento: omieFolhaDocumento(competencia, item),
     numero_documento_fiscal: String(item.numero_nf || "").slice(0, 20),
     observacao: [
       `Folha PJ competencia ${competencia} - ${item.razao_social || item.nome}`,
+      `Documento interno: ${omieFolhaDocumento(competencia, item)}`,
       money(item.desconto_adiantamentos) > 0 ? `Adiantamento a compensar: ${formatCurrency(item.desconto_adiantamentos)}` : "",
       extras,
     ].filter(Boolean).join(" | "),
@@ -4157,8 +5551,8 @@ async function compensarFolhaItemComAdiantamento({ competencia, item, contaPagar
   ));
   if (!valorCompensar || valorCompensar <= 0) return { valor: 0, skipped: true };
   if (!contaPagarId) throw new Error("Omie nao retornou o codigo do titulo para baixar o adiantamento.");
-  const contaAdiantamentoId = resolveOmieContaAdiantamentoId();
-  if (!contaAdiantamentoId) throw new Error("Configure OMIE_CONTA_ADIANTAMENTO_ID para compensar adiantamentos no Omie.");
+  const contaAdiantamentoId = resolveOmieContaAdiantamentoFornecedorId();
+  if (!contaAdiantamentoId) throw new Error("Configure OMIE_CONTA_ADIANTAMENTO_FORNECEDOR_ID para compensar adiantamentos ao fornecedor no Omie.");
   const codigoBaixa = omieFolhaBaixaAdiantamentoCode(competencia, item);
   const payload = {
     codigo_lancamento: Number(contaPagarId),
@@ -4173,6 +5567,86 @@ async function compensarFolhaItemComAdiantamento({ competencia, item, contaPagar
   };
   const retorno = await omieCall("contaPagar", "LancarPagamento", payload);
   return { valor: valorCompensar, codigo_baixa_integracao: codigoBaixa, retorno };
+}
+
+async function upsertContaPagarFolhaItem({ competencia, item, contaCorrenteId, vencimento, codigoProjeto, codigoDepartamento }) {
+  const fornecedorCodigo = await ensureOmiePrestador(item, { allowCreate: true });
+  const payload = omieContaPagarPayload({
+    competencia,
+    item,
+    fornecedorCodigo,
+    contaCorrenteId,
+    vencimento,
+    codigoProjeto,
+    codigoDepartamento,
+  });
+  try {
+    return { payload, result: await omieCall("contaPagar", "UpsertContaPagar", payload) };
+  } catch (error) {
+    if (/cliente est[a-z??]+ inativo|fornecedor.*inativo/i.test(String(error.message || ""))) {
+      throw new Error("Fornecedor inativo no Omie. Integracao bloqueada ate autorizacao manual para consulta/reativacao.");
+    }
+    throw error;
+  }
+}
+
+async function integrarOmieAdiantamentoPJ(adiantamento) {
+  const contaOrigemId = await resolveOmieContaCorrenteId();
+  const contaDestinoId = resolveOmieContaAdiantamentoFornecedorId();
+  if (!contaOrigemId || !contaDestinoId) {
+    throw new Error("Configure OMIE_CONTA_CORRENTE_ID e OMIE_CONTA_ADIANTAMENTO_FORNECEDOR_ID para integrar adiantamentos ao fornecedor.");
+  }
+  const codigoCategoria = resolveOmieTransferenciaCategoria();
+  if (!codigoCategoria) throw new Error("Configure OMIE_CATEGORIA_TRANSFERENCIA para integrar adiantamentos.");
+  const codigoIntegracao = adiantamento.omie_codigo_integracao || omieAdiantamentoIntegracaoCode(adiantamento);
+  const documento = omieAdiantamentoDocumento(adiantamento);
+  const payload = {
+    cCodIntLanc: codigoIntegracao,
+    cabecalho: {
+      nCodCC: contaOrigemId,
+      dDtLanc: formatOmieDate(dateOnly(adiantamento.data_adiantamento)),
+      nValorLanc: money(adiantamento.valor_total),
+    },
+    detalhes: {
+      cTipo: "TRA",
+      cCodCateg: codigoCategoria,
+      cNumDoc: documento,
+      cObs: [
+        `Adiantamento ao Fornecedor PJ ${documento}`,
+        adiantamento.razao_social || adiantamento.nome || "",
+        adiantamento.observacao || "",
+      ].filter(Boolean).join(" | "),
+    },
+    transferencia: {
+      nCodCCDestino: contaDestinoId,
+    },
+  };
+  const retorno = await omieCall("contaCorrenteLancamentos", "IncluirLancCC", payload);
+  const codigoLancamento = Number(retorno.nCodLanc || retorno.codigo_lancamento_omie || retorno.codigo_lancamento || retorno.codigo || 0) || null;
+  await pool.query(
+    `UPDATE adiantamentos
+     SET omie_status = 'integrado', omie_codigo_lancamento = ?, omie_codigo_integracao = ?,
+       omie_erro = NULL, omie_integrado_em = NOW()
+     WHERE id = ?`,
+    [codigoLancamento, codigoIntegracao, adiantamento.id],
+  );
+  let anexos = [];
+  if (codigoLancamento) {
+    try {
+      anexos = await enviarAnexoAdiantamentoPjOmie({ ...adiantamento, omie_codigo_integracao: codigoIntegracao }, codigoLancamento);
+      await pool.query(
+        "UPDATE adiantamentos SET omie_anexos_status = 'integrado', omie_anexos_erro = NULL, omie_anexos_em = NOW() WHERE id = ?",
+        [adiantamento.id],
+      );
+    } catch (error) {
+      await pool.query(
+        "UPDATE adiantamentos SET omie_anexos_status = 'erro', omie_anexos_erro = ? WHERE id = ?",
+        [error.message, adiantamento.id],
+      );
+      throw new Error(`Adiantamento integrado, mas falhou ao enviar anexo: ${error.message}`);
+    }
+  }
+  return { retorno, codigo_lancamento: codigoLancamento, codigo_integracao: codigoIntegracao, documento, anexos };
 }
 
 function validatePrestador(body, user = null, prestadorId = null) {
@@ -4203,7 +5677,8 @@ function validateUsuario(body, isUpdate = false) {
 async function getPrestadores(user) {
   const [rows] = await pool.query(
     `SELECT p.*, COALESCE(cli.nome, u.nome) AS unidade_nome, cli.nome AS cliente_nome, f.nome AS funcao, c.nome AS categoria,
-      d.nome AS departamento, pr.nome AS projeto
+      c.omie_codigo AS categoria_omie_codigo,
+      d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
      FROM prestadores p
      LEFT JOIN unidades u ON u.id = p.unidade_id
      LEFT JOIN clientes cli ON cli.id = p.cliente_id
@@ -4254,7 +5729,7 @@ function accountMovement({
 async function getPrestadorContaCorrente(prestadorId, user) {
   const [[prestador]] = await pool.query(
     `SELECT p.*, COALESCE(cli.nome, u.nome) AS unidade_nome, cli.nome AS cliente_nome, f.nome AS funcao, c.nome AS categoria,
-            d.nome AS departamento, pr.nome AS projeto
+            d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
        FROM prestadores p
        LEFT JOIN unidades u ON u.id = p.unidade_id
        LEFT JOIN clientes cli ON cli.id = p.cliente_id
@@ -4421,7 +5896,7 @@ async function buildFolhaAberta(competencia, user = null) {
   const monthEnd = competenciaEndDate(competencia);
   const [prestadores] = await pool.query(
     `SELECT p.*, COALESCE(cli.nome, u.nome) AS unidade_nome, cli.nome AS cliente_nome, f.nome AS funcao, c.nome AS categoria,
-      d.nome AS departamento, pr.nome AS projeto
+      d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
      FROM prestadores p
      LEFT JOIN unidades u ON u.id = p.unidade_id
      LEFT JOIN clientes cli ON cli.id = p.cliente_id
@@ -4469,7 +5944,13 @@ async function buildFolhaAberta(competencia, user = null) {
       valor_nf_emitida: 0,
       numero_nf: null,
       liquido_pagar: liquido,
-      diferenca_nf: Number((0 - liquido).toFixed(2)),
+      diferenca_nf: folhaNfDifference({
+        valor_nf_emitida: 0,
+        liquido_pagar: liquido,
+        desconto_adiantamentos: descontoAdiantamentos,
+        valor_nf_previsto: valorDias,
+        descontos_manual: 0,
+      }),
       ...prestador,
     };
   }).filter((item) => item.dias_trabalhados > 0);
@@ -4496,7 +5977,7 @@ async function buildFolhaAberta(competencia, user = null) {
 app.get("/api/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
-    res.json({ ok: true });
+    res.json({ ok: true, build: "approval-shadow-fix-20260602" });
   } catch {
     res.status(500).json({ ok: false, error: "Nao foi possivel conectar ao banco." });
   }
@@ -4688,11 +6169,13 @@ app.use("/api", (req, res, next) => {
     if (req.path === "/config/smtp") return requirePermission("manage_smtp")(req, res, next);
     if (req.path === "/config/email-templates") return requirePermission("manage_smtp")(req, res, next);
     if (req.path === "/config/omie") return requirePermission("manage_omie_config")(req, res, next);
+    if (req.path === "/config/approval-flows") return requirePermission("manage_users")(req, res, next);
     if (req.path === "/cadastros-config") return requirePermission("manage_cadastros")(req, res, next);
     if (req.path.startsWith("/folhas")) return requirePermission("view_folhas")(req, res, next);
     if (req.path.startsWith("/adiantamentos") || req.path.startsWith("/rescisoes")) {
       if (req.method === "POST" && /^\/adiantamentos\/[^/]+\/aprovar$/.test(req.path)) return requirePermission("approve_folhas")(req, res, next);
       if (req.method === "POST" && /^\/adiantamentos\/[^/]+\/reprovar$/.test(req.path)) return requirePermission("approve_folhas")(req, res, next);
+      if (req.method === "POST" && /^\/adiantamentos\/[^/]+\/integrar-omie$/.test(req.path)) return requirePermission("integrate_omie")(req, res, next);
       if (req.path.startsWith("/adiantamentos")) return requirePermission("manage_adiantamentos")(req, res, next);
       if (hasPermission(req.user, "manage_rescisoes") || hasPermission(req.user, "approve_folhas")) return next();
       return res.status(403).json({ error: "Usuario sem permissao para esta acao." });
@@ -4707,6 +6190,7 @@ app.use("/api", (req, res, next) => {
     if (req.path.startsWith("/config/smtp")) return requirePermission("manage_smtp")(req, res, next);
     if (req.path.startsWith("/config/email-templates")) return requirePermission("manage_smtp")(req, res, next);
     if (req.path.startsWith("/config/omie")) return requirePermission("manage_omie_config")(req, res, next);
+    if (req.path.startsWith("/config/approval-flows")) return requirePermission("manage_users")(req, res, next);
     return requirePermission("manage_cadastros")(req, res, next);
   }
   if (req.path.startsWith("/cadastros/") || req.path === "/unidades") {
@@ -4735,6 +6219,7 @@ app.use("/api", (req, res, next) => {
     return requirePermission("view_prestadores")(req, res, next);
   }
   if (req.path.startsWith("/adiantamentos")) {
+    if (req.method === "POST" && /^\/adiantamentos\/[^/]+\/integrar-omie$/.test(req.path)) return requirePermission("integrate_omie")(req, res, next);
     return requirePermission("manage_adiantamentos")(req, res, next);
   }
   if (req.path.startsWith("/rescisoes")) {
@@ -4755,6 +6240,8 @@ app.get("/api/config/smtp", (_req, res) => {
       graphClientId: env.GRAPH_CLIENT_ID || process.env.GRAPH_CLIENT_ID || "",
       graphFrom: env.GRAPH_FROM || process.env.GRAPH_FROM || "",
       graphSecretConfigured: Boolean(env.GRAPH_CLIENT_SECRET || process.env.GRAPH_CLIENT_SECRET),
+      nfDeadlineDay: env.NF_DEADLINE_DAY || process.env.NF_DEADLINE_DAY || "3",
+      nfFollowupDaysBefore: env.NF_FOLLOWUP_DAYS_BEFORE || process.env.NF_FOLLOWUP_DAYS_BEFORE || "3",
     },
   });
 });
@@ -4767,6 +6254,7 @@ app.get("/api/config/omie", (_req, res) => {
       appSecretConfigured: Boolean(env.OMIE_APP_SECRET || process.env.OMIE_APP_SECRET),
       dueDay: env.OMIE_DUE_DAY || process.env.OMIE_DUE_DAY || "5",
       contaCorrenteId: env.OMIE_CONTA_CORRENTE_ID || process.env.OMIE_CONTA_CORRENTE_ID || "",
+      contaAdiantamentoFornecedorId: env.OMIE_CONTA_ADIANTAMENTO_FORNECEDOR_ID || process.env.OMIE_CONTA_ADIANTAMENTO_FORNECEDOR_ID || env.OMIE_CONTA_ADIANTAMENTO_ID || process.env.OMIE_CONTA_ADIANTAMENTO_ID || "",
       banco: env.OMIE_CONTA_BANCO || process.env.OMIE_CONTA_BANCO || "341",
       agencia: env.OMIE_CONTA_AGENCIA || process.env.OMIE_CONTA_AGENCIA || "1268",
       conta: env.OMIE_CONTA_NUMERO || process.env.OMIE_CONTA_NUMERO || "33981-7",
@@ -4790,11 +6278,85 @@ app.get("/api/config/app", async (_req, res) => {
   });
 });
 
+app.get("/api/config/approval-flows", async (_req, res) => {
+  try {
+    const [users] = await pool.query(
+      `SELECT id, nome, email, perfil, permissoes_json
+         FROM usuarios
+        WHERE ativo = 1
+        ORDER BY nome`,
+    );
+    const approvers = users.filter((user) => hasPermission(user, "approve_folhas") || hasPermission(user, "reembolso_aprovar"));
+    const flows = {};
+    for (const tipo of Object.keys(approvalFlowTypes)) {
+      const configured = await getConfiguredApprovalFlow(pool, tipo);
+      const source = configured.length ? configured : await getMandatoryApprovers(pool, tipo);
+      flows[tipo] = source.map((item, index) => ({
+        ordem: Number(item.ordem || index + 1),
+        usuario_id: Number(item.usuario_id || item.id),
+        nome: item.nome,
+        email: item.email,
+        perfil: item.perfil,
+      }));
+    }
+    res.json({
+      tipos: Object.entries(approvalFlowTypes).map(([tipo, config]) => ({ tipo, label: config.label })),
+      approvers: approvers.map((user) => publicUser(user)),
+      flows,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Nao foi possivel carregar fluxos de aprovacao." });
+  }
+});
+
+app.put("/api/config/approval-flows", async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const flows = req.body?.flows || {};
+    await connection.beginTransaction();
+    const saved = {};
+    for (const tipo of Object.keys(approvalFlowTypes)) {
+      const ids = Array.isArray(flows[tipo]) ? flows[tipo].map(Number).filter(Boolean) : [];
+      const uniqueIds = [...new Set(ids)];
+      if (uniqueIds.length !== ids.length) throw new Error(`O fluxo ${approvalFlowTypes[tipo].label} possui aprovador duplicado.`);
+      if (!uniqueIds.length) throw new Error(`Informe ao menos um aprovador para ${approvalFlowTypes[tipo].label}.`);
+      const [users] = await connection.query(
+        `SELECT id, nome, email, perfil, permissoes_json
+           FROM usuarios
+          WHERE ativo = 1 AND id IN (?)`,
+        [uniqueIds],
+      );
+      if (users.length !== uniqueIds.length) throw new Error(`Um aprovador do fluxo ${approvalFlowTypes[tipo].label} nao esta ativo.`);
+      const byId = new Map(users.map((user) => [Number(user.id), user]));
+      const invalid = uniqueIds
+        .map((id) => byId.get(id))
+        .filter((user) => !hasPermission(user, "approve_folhas") && !hasPermission(user, "reembolso_aprovar"));
+      if (invalid.length) throw new Error(`${invalid[0].nome} nao possui permissao de aprovador.`);
+      await connection.query("DELETE FROM approval_fluxos WHERE tipo = ?", [tipo]);
+      for (let index = 0; index < uniqueIds.length; index += 1) {
+        await connection.query(
+          "INSERT INTO approval_fluxos (tipo, ordem, usuario_id, ativo) VALUES (?, ?, ?, 1)",
+          [tipo, index + 1, uniqueIds[index]],
+        );
+      }
+      saved[tipo] = uniqueIds;
+    }
+    await connection.commit();
+    res.json({ ok: true, flows: saved });
+  } catch (error) {
+    await connection.rollback();
+    res.status(400).json({ error: error.message || "Nao foi possivel salvar fluxos de aprovacao." });
+  } finally {
+    connection.release();
+  }
+});
+
 app.post("/api/config/omie", (req, res) => {
   const updates = {
     OMIE_APP_KEY: req.body.appKey || "",
     OMIE_DUE_DAY: req.body.dueDay || "5",
     OMIE_CONTA_CORRENTE_ID: req.body.contaCorrenteId || "",
+    OMIE_CONTA_ADIANTAMENTO_FORNECEDOR_ID: req.body.contaAdiantamentoFornecedorId || "",
     OMIE_CONTA_BANCO: req.body.banco || "341",
     OMIE_CONTA_AGENCIA: req.body.agencia || "1268",
     OMIE_CONTA_NUMERO: req.body.conta || "33981-7",
@@ -4820,6 +6382,8 @@ app.post("/api/config/smtp", (req, res) => {
     GRAPH_TENANT_ID: req.body.graphTenantId || "",
     GRAPH_CLIENT_ID: req.body.graphClientId || "",
     GRAPH_FROM: req.body.graphFrom || "",
+    NF_DEADLINE_DAY: req.body.nfDeadlineDay || "3",
+    NF_FOLLOWUP_DAYS_BEFORE: req.body.nfFollowupDaysBefore || "3",
   };
   if (req.body.graphClientSecret) updates.GRAPH_CLIENT_SECRET = req.body.graphClientSecret;
   writeEnv(updates);
@@ -4906,6 +6470,164 @@ app.get("/api/resumo", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: "Nao foi possivel carregar o resumo." });
+  }
+});
+
+app.get("/api/financeiro/fila", async (req, res) => {
+  try {
+    const canFinanceiro = hasPermission(req.user, "integrate_omie")
+      || hasPermission(req.user, "reembolso_financeiro")
+      || hasPermission(req.user, "reembolso_integrar_omie");
+    if (!canFinanceiro) return res.status(403).json({ error: "Acesso negado." });
+
+    const itens = [];
+    const podeIntegrarPj = hasPermission(req.user, "integrate_omie");
+    const podeReembolso = hasPermission(req.user, "reembolso_financeiro") || hasPermission(req.user, "reembolso_integrar_omie");
+
+    if (podeIntegrarPj) {
+      const [folhas] = await pool.query(
+        `SELECT f.id AS folha_id, f.competencia, f.status,
+          fl.id AS lote_id, fl.numero AS lote_numero, fl.status AS lote_status,
+          COUNT(fi.id) AS itens,
+          COALESCE(SUM(fi.liquido_pagar), 0) AS valor,
+          SUM(CASE WHEN fi.omie_status = 'erro' THEN 1 ELSE 0 END) AS erros,
+          GROUP_CONCAT(DISTINCT NULLIF(fi.omie_erro, '') SEPARATOR ' | ') AS erro
+         FROM folhas f
+         JOIN folha_itens fi ON fi.folha_id = f.id
+         LEFT JOIN folha_lotes fl ON fl.id = fi.lote_id
+         WHERE f.status = 'fechada'
+           AND COALESCE(NULLIF(fi.valor_nf_emitida, 0), fi.valor_nf_previsto, fi.liquido_pagar) > 0
+           AND fi.omie_status <> 'integrado'
+         GROUP BY f.id, f.competencia, f.status, fl.id, fl.numero, fl.status
+         ORDER BY f.competencia DESC, fl.numero DESC`,
+      );
+      folhas.forEach((folha) => {
+        const loteLabel = folha.lote_id ? `Lote ${folha.lote_numero}` : "Folha completa";
+        itens.push({
+          key: `folha-${folha.competencia}-${folha.lote_id || "geral"}`,
+          tipo: "folha",
+          tipo_label: "Folha PJ",
+          numero: `${folha.competencia} | ${loteLabel}`,
+          descricao: `${Number(folha.itens || 0)} pagamento(s) pendente(s) de Omie`,
+          competencia: folha.competencia,
+          data: "",
+          valor: Number(folha.valor || 0),
+          status: folha.erros ? "erro_omie" : "pendente_omie",
+          status_label: folha.erros ? "Erro Omie" : "A integrar",
+          status_kind: folha.erros ? "error" : "warn",
+          acao_label: "Integrar folha ao Omie",
+          erro: folha.erro || null,
+          open_url: `/#folha:${encodeURIComponent(folha.competencia)}`,
+          integrate_url: `/api/folhas/${encodeURIComponent(folha.competencia)}/integrar-omie`,
+          integrate_body: folha.lote_id ? { lote_id: folha.lote_id } : {},
+        });
+      });
+
+      const [rescisoes] = await pool.query(
+        `SELECT r.id, r.data_rescisao, r.status, r.omie_status, r.omie_erro, r.valor_total_pagar,
+          p.nome, p.razao_social
+         FROM rescisoes r
+         JOIN prestadores p ON p.id = r.prestador_id
+         WHERE r.status IN ('finalizada', 'erro_omie')
+           AND COALESCE(r.omie_status, 'pendente') <> 'integrado'
+         ORDER BY r.data_rescisao DESC, r.id DESC`,
+      );
+      rescisoes.forEach((rescisao) => {
+        itens.push({
+          key: `rescisao-${rescisao.id}`,
+          tipo: "rescisao",
+          tipo_label: "Rescisão",
+          numero: `RES-${rescisao.id}`,
+          descricao: `${rescisao.razao_social || rescisao.nome} | ${rescisao.nome || ""}`,
+          competencia: String(rescisao.data_rescisao || "").slice(0, 7),
+          data: rescisao.data_rescisao || "",
+          valor: Number(rescisao.valor_total_pagar || 0),
+          status: rescisao.omie_status || rescisao.status,
+          status_label: rescisao.omie_status === "erro" ? "Erro Omie" : "A integrar",
+          status_kind: rescisao.omie_status === "erro" ? "error" : "warn",
+          acao_label: "Integrar rescisão ao Omie",
+          erro: rescisao.omie_erro || null,
+          open_url: "/#rescisoes",
+          report_url: `/api/rescisoes/${rescisao.id}/relatorio`,
+          integrate_url: `/api/rescisoes/${rescisao.id}/integrar-omie`,
+          integrate_body: {},
+        });
+      });
+
+      const [adiantamentos] = await pool.query(
+        `SELECT a.id, a.data_adiantamento, a.status, a.omie_status, a.omie_erro, a.valor_total,
+          p.nome, p.razao_social
+         FROM adiantamentos a
+         JOIN prestadores p ON p.id = a.prestador_id
+         WHERE a.status = 'aprovado'
+           AND COALESCE(a.omie_status, 'pendente') <> 'integrado'
+         ORDER BY a.data_adiantamento DESC, a.id DESC`,
+      );
+      adiantamentos.forEach((adiantamento) => {
+        itens.push({
+          key: `adiantamento-${adiantamento.id}`,
+          tipo: "adiantamento",
+          tipo_label: "Adiantamento PJ",
+          numero: `AD-PJ-${adiantamento.id}`,
+          descricao: `${adiantamento.razao_social || adiantamento.nome} | ${adiantamento.nome || ""}`,
+          competencia: String(adiantamento.data_adiantamento || "").slice(0, 7),
+          data: adiantamento.data_adiantamento || "",
+          valor: Number(adiantamento.valor_total || 0),
+          status: adiantamento.omie_status || adiantamento.status,
+          status_label: adiantamento.omie_status === "erro" ? "Erro Omie" : "A integrar",
+          status_kind: adiantamento.omie_status === "erro" ? "error" : "warn",
+          acao_label: "Integrar adiantamento ao Omie",
+          erro: adiantamento.omie_erro || null,
+          open_url: "/#adiantamentos",
+          integrate_url: `/api/adiantamentos/${adiantamento.id}/integrar-omie`,
+          integrate_body: {},
+        });
+      });
+    }
+
+    if (podeReembolso) {
+      const [prestacoes] = await pool.query(
+        `SELECT p.id, p.numero, p.status, p.omie_status, p.omie_erro, p.total_despesas,
+          p.valor_reembolsar, p.saldo_devolver, p.data_pagamento_prevista, p.data_inicio, p.data_fim,
+          u.nome AS solicitante, c.nome AS centro_custo
+         FROM rd_reembolso_prestacoes p
+         JOIN usuarios u ON u.id = p.solicitante_id
+         LEFT JOIN departamentos c ON c.id = p.centro_custo_id
+         WHERE p.status IN ('em_validacao_financeira', 'a_pagar', 'a_devolver')
+            OR COALESCE(p.omie_status, 'pendente') = 'erro'
+         ORDER BY p.data_pagamento_prevista ASC, p.id DESC`,
+      );
+      prestacoes.forEach((prestacao) => {
+        const erro = prestacao.omie_erro || null;
+        itens.push({
+          key: `reembolso-${prestacao.id}`,
+          tipo: "reembolso",
+          tipo_label: "Reembolso",
+          numero: prestacao.numero,
+          descricao: `${prestacao.solicitante} | ${prestacao.centro_custo || "Sem centro de custo"}`,
+          competencia: String(prestacao.data_pagamento_prevista || prestacao.data_fim || "").slice(0, 7),
+          data: prestacao.data_pagamento_prevista || prestacao.data_fim || "",
+          valor: Number(prestacao.valor_reembolsar || prestacao.saldo_devolver || prestacao.total_despesas || 0),
+          status: prestacao.omie_status === "erro" ? "erro_omie" : prestacao.status,
+          status_label: prestacao.omie_status === "erro" ? "Erro Omie" : prestacao.status === "a_pagar" ? "A pagar" : prestacao.status === "a_devolver" ? "A devolver" : "Validação financeira",
+          status_kind: prestacao.omie_status === "erro" ? "error" : prestacao.status === "em_validacao_financeira" ? "warn" : "ok",
+          acao_label: prestacao.omie_status === "erro" ? "Revisar no módulo de reembolso" : prestacao.status === "em_validacao_financeira" ? "Validar/integrar no módulo de reembolso" : "Acompanhar pagamento/devolução no módulo de reembolso",
+          erro,
+          open_url: reembolsoAppUrl(req, `/?prestacao=${encodeURIComponent(prestacao.id)}`),
+          report_url: reembolsoAppUrl(req, `/api/prestacoes/${prestacao.id}/relatorio`),
+        });
+      });
+    }
+
+    const resumo = {
+      total: itens.length,
+      a_integrar: itens.filter((item) => item.integrate_url || (item.tipo === "reembolso" && ["em_validacao_financeira", "erro_omie"].includes(item.status))).length,
+      valor: itens.reduce((sum, item) => sum + Number(item.valor || 0), 0),
+    };
+    res.json({ itens, resumo });
+  } catch (error) {
+    console.error("Falha ao carregar fila financeira:", error);
+    res.status(500).json({ error: "Nao foi possivel carregar a fila do financeiro." });
   }
 });
 
@@ -5020,10 +6742,14 @@ app.post("/api/cadastros/:tipo", async (req, res) => {
     }
     if (config.table === "projetos") {
       const clienteId = req.body.cliente_id || null;
+      const omieCodigo = String(req.body.omie_codigo || "").trim() || null;
+      if (omieCodigo && !/^\d+(?:\.\d+)*$/.test(omieCodigo)) {
+        return res.status(400).json({ error: "Informe um codigo Omie valido para o projeto." });
+      }
       await pool.query(
-        `INSERT INTO projetos (nome, cliente_id, ativo) VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE cliente_id = VALUES(cliente_id), ativo = VALUES(ativo)`,
-        [nome, clienteId, req.body.ativo === false ? 0 : 1],
+        `INSERT INTO projetos (nome, cliente_id, omie_codigo, ativo) VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE cliente_id = VALUES(cliente_id), omie_codigo = VALUES(omie_codigo), ativo = VALUES(ativo)`,
+        [nome, clienteId, omieCodigo, req.body.ativo === false ? 0 : 1],
       );
       const [[row]] = await pool.query(
         `SELECT p.*, c.nome AS cliente_nome
@@ -5108,9 +6834,13 @@ app.put("/api/cadastros/:tipo/:id", async (req, res) => {
       return res.json({ cadastro: row });
     }
     if (config.table === "projetos") {
+      const omieCodigo = String(req.body.omie_codigo || "").trim() || null;
+      if (omieCodigo && !/^\d+(?:\.\d+)*$/.test(omieCodigo)) {
+        return res.status(400).json({ error: "Informe um codigo Omie valido para o projeto." });
+      }
       const [result] = await pool.query(
-        "UPDATE projetos SET nome = ?, cliente_id = ?, ativo = ? WHERE id = ?",
-        [nome, req.body.cliente_id || null, req.body.ativo === false ? 0 : 1, req.params.id],
+        "UPDATE projetos SET nome = ?, cliente_id = ?, omie_codigo = ?, ativo = ? WHERE id = ?",
+        [nome, req.body.cliente_id || null, omieCodigo, req.body.ativo === false ? 0 : 1, req.params.id],
       );
       if (!result.affectedRows) return res.status(404).json({ error: "Registro nao encontrado." });
       const [[row]] = await pool.query(
@@ -5266,7 +6996,14 @@ app.post("/api/prestadores", async (req, res) => {
         req.body.ativo === false ? 0 : 1,
       ],
     );
-    res.status(201).json({ id: result.insertId });
+    let omie = null;
+    try {
+      const [[prestador]] = await pool.query("SELECT * FROM prestadores WHERE id = ?", [result.insertId]);
+      omie = await syncPrestadorCadastroOmie(prestador, { allowCreate: true });
+    } catch (error) {
+      omie = { synced: false, error: error.message || "Nao foi possivel sincronizar o prestador com a Omie." };
+    }
+    res.status(201).json({ id: result.insertId, omie });
   } catch (error) {
     res.status(500).json({ error: "Nao foi possivel salvar o prestador. Verifique duplicidade de CPF/CNPJ." });
   }
@@ -5316,7 +7053,14 @@ app.put("/api/prestadores/:id", async (req, res) => {
         req.params.id,
       ],
     );
-    res.json({ ok: true });
+    let omie = null;
+    try {
+      const [[prestador]] = await pool.query("SELECT * FROM prestadores WHERE id = ?", [req.params.id]);
+      omie = await syncPrestadorCadastroOmie(prestador, { allowCreate: true });
+    } catch (error) {
+      omie = { synced: false, error: error.message || "Nao foi possivel sincronizar o prestador com a Omie." };
+    }
+    res.json({ ok: true, omie });
   } catch {
     res.status(500).json({ error: "Nao foi possivel atualizar o prestador." });
   }
@@ -5436,6 +7180,7 @@ app.post("/api/adiantamentos/:id/enviar-aprovacao", async (req, res) => {
       detalhe: `Adiantamento de ${adiantamento.razao_social || adiantamento.nome}, valor ${formatCurrency(adiantamento.valor_total)}, aguardando análise.`,
       link: appUrl(req, `/aprovacoes.html?tipo=adiantamento&id=${encodeURIComponent(adiantamento.id)}`),
       approvers: [approvers[0]],
+      demonstrativoHtml: await renderAdiantamentoApprovalEmailDemonstrativo(adiantamento),
     });
     res.json({ ...result, aprovacoes: await getAdiantamentoApprovals(adiantamento) });
   } catch (error) {
@@ -5465,9 +7210,15 @@ app.post("/api/adiantamentos/:id/aprovar", async (req, res) => {
     const aprovacoes = await getAdiantamentoApprovals(adiantamento);
     let aprovado = false;
     let emailProximo = null;
+    let emailFinanceiro = null;
     if (aprovacoes.approved) {
       await pool.query("UPDATE adiantamentos SET status = 'aprovado' WHERE id = ?", [adiantamento.id]);
       aprovado = true;
+      emailFinanceiro = await sendFinanceActionEmail(req, {
+        titulo: `Adiantamento PJ #${adiantamento.id} aprovado`,
+        detalhe: `Adiantamento de ${adiantamento.razao_social || adiantamento.nome || `prestador ${adiantamento.prestador_id}`}, valor ${formatCurrency(adiantamento.valor_total)}, aprovado e aguardando acao financeira.`,
+        link: appUrl(req, "/"),
+      });
     } else {
       emailProximo = await sendNextApprovalEmail(req, {
         tipo: "adiantamento",
@@ -5475,9 +7226,10 @@ app.post("/api/adiantamentos/:id/aprovar", async (req, res) => {
         detalhe: "O adiantamento foi aprovado na etapa anterior e aguarda sua análise.",
         link: appUrl(req, `/aprovacoes.html?tipo=adiantamento&id=${encodeURIComponent(adiantamento.id)}`),
         aprovacoes,
+        demonstrativoHtml: await renderAdiantamentoApprovalEmailDemonstrativo(adiantamento),
       });
     }
-    res.json({ ok: true, aprovacoes, aprovado, emailProximo });
+    res.json({ ok: true, aprovacoes, aprovado, emailProximo, emailFinanceiro });
   } catch (error) {
     res.status(500).json({ error: error.message || "Nao foi possivel aprovar o adiantamento." });
   }
@@ -5509,6 +7261,34 @@ app.post("/api/adiantamentos/:id/reprovar", async (req, res) => {
     res.json({ ok: true, status: "reprovado", motivo });
   } catch (error) {
     res.status(500).json({ error: error.message || "Nao foi possivel reprovar o adiantamento." });
+  }
+});
+
+app.post("/api/adiantamentos/:id/integrar-omie", async (req, res) => {
+  try {
+    const [[adiantamento]] = await pool.query(
+      `SELECT a.*, p.nome, p.razao_social
+       FROM adiantamentos a
+       JOIN prestadores p ON p.id = a.prestador_id
+       WHERE a.id = ?`,
+      [req.params.id],
+    );
+    if (!adiantamento) return res.status(404).json({ error: "Adiantamento nao encontrado." });
+    if (adiantamento.status !== "aprovado") {
+      return res.status(400).json({ error: "Somente adiantamento aprovado pode ser integrado ao Omie." });
+    }
+    if (adiantamento.omie_status === "integrado") {
+      return res.status(400).json({ error: "Adiantamento ja integrado ao Omie." });
+    }
+    const resultado = await integrarOmieAdiantamentoPJ(adiantamento);
+    res.json({ ok: true, ...resultado });
+  } catch (error) {
+    console.error("Falha ao integrar adiantamento PJ no Omie:", error);
+    await pool.query(
+      "UPDATE adiantamentos SET omie_status = 'erro', omie_erro = ? WHERE id = ?",
+      [error.message || "Falha ao integrar adiantamento.", req.params.id],
+    ).catch(() => {});
+    res.status(500).json({ error: error.message || "Nao foi possivel integrar o adiantamento ao Omie." });
   }
 });
 
@@ -5569,7 +7349,7 @@ async function folhaApprovalMobileItem(folha, user) {
     [competencia],
   );
   if (lote) {
-    const itens = lote.itens_json ? JSON.parse(lote.itens_json) : [];
+    const itens = parseJsonValue(lote.itens_json, []);
     const payloadHash = approvalPayloadHash(competencia, itens, lote.id);
     if (lote.payload_hash && lote.payload_hash !== payloadHash) return null;
     const aprovacoes = await getFolhaApprovals(competencia, payloadHash, pool, lote.id);
@@ -5586,15 +7366,15 @@ async function folhaApprovalMobileItem(folha, user) {
       aprovacoes,
       approveUrl: `/api/folhas/${encodeURIComponent(competencia)}/aprovar`,
       rejectUrl: `/api/folhas/${encodeURIComponent(competencia)}/reprovar`,
-      reportUrl: `/api/folhas/${encodeURIComponent(competencia)}/relatorio`,
+      reportUrl: `/folha-relatorio.html?competencia=${encodeURIComponent(competencia)}`,
       approveBody: { lote_id: lote.id },
     };
   }
   const [storedItems] = await pool.query(
     `SELECT fi.*, p.nome, p.cpf, p.cnpj, p.razao_social, p.email, p.telefone,
-      f.nome AS funcao, d.nome AS departamento, pr.nome AS projeto,
+      f.nome AS funcao, d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo,
       p.salario_contrato, p.precificacao_tipo, p.valor_dia, p.data_admissao, p.data_rescisao, COALESCE(cli.nome, u.nome) AS unidade_nome,
-      (fi.valor_nf_emitida - fi.liquido_pagar) AS diferenca_nf
+      (fi.valor_nf_emitida - (fi.liquido_pagar + fi.desconto_adiantamentos)) AS diferenca_nf
      FROM folha_itens fi
      JOIN prestadores p ON p.id = fi.prestador_id
      LEFT JOIN unidades u ON u.id = p.unidade_id
@@ -5628,7 +7408,7 @@ async function folhaApprovalMobileItem(folha, user) {
     aprovacoes,
     approveUrl: `/api/folhas/${encodeURIComponent(competencia)}/aprovar`,
     rejectUrl: `/api/folhas/${encodeURIComponent(competencia)}/reprovar`,
-    reportUrl: `/api/folhas/${encodeURIComponent(competencia)}/relatorio`,
+    reportUrl: `/folha-relatorio.html?competencia=${encodeURIComponent(competencia)}`,
     approveBody: { itens },
   };
 }
@@ -5857,7 +7637,41 @@ app.get("/api/aprovacoes-pendentes", requireAnyApprovalPermission, async (req, r
          ORDER BY r.data_rescisao DESC, r.id DESC`,
       );
       for (const rescisao of rescisoes) {
-        const aprovacoes = await getRescisaoApprovals(rescisao);
+        let aprovacoes = await getRescisaoApprovals(rescisao);
+        const mandatoryApprovers = await getMandatoryApprovers(pool, "rescisao");
+        const validHashes = [...new Set([
+          rescisaoApprovalPayloadHash(rescisao),
+          String(rescisao.approval_payload_hash || "").trim(),
+        ].filter(Boolean))];
+        const [approvedRows] = await pool.query(
+          `SELECT ra.usuario_id, ra.codigo_autenticacao, ra.aprovado_em, ra.comentario, u.nome, u.email, u.perfil
+             FROM rescisao_aprovacoes ra
+             JOIN usuarios u ON u.id = ra.usuario_id
+            WHERE ra.rescisao_id = ? AND ra.payload_hash IN (?) AND ra.decisao = 'aprovado'
+            ORDER BY ra.aprovado_em ASC`,
+          [rescisao.id, validHashes],
+        );
+        const approvedIds = new Set(approvedRows.map((row) => Number(row.usuario_id)));
+        const rescisaoPendentes = mandatoryApprovers
+          .filter((user) => !approvedIds.has(Number(user.id)))
+          .map((user) => ({ id: user.id, nome: user.nome, email: user.email, perfil: user.perfil }));
+        aprovacoes = {
+          ...aprovacoes,
+          required: mandatoryApprovers.length,
+          count: mandatoryApprovers.length - rescisaoPendentes.length,
+          approved: mandatoryApprovers.length > 0 && rescisaoPendentes.length === 0,
+          pendentes: rescisaoPendentes,
+          proximo: rescisaoPendentes[0] || null,
+          aprovadores: approvedRows.map((row) => ({
+            id: row.usuario_id,
+            nome: row.nome,
+            email: row.email,
+            perfil: row.perfil,
+            codigo_autenticacao: row.codigo_autenticacao,
+            aprovado_em: row.aprovado_em,
+            comentario: row.comentario,
+          })),
+        };
         if (Number(aprovacoes.proximo?.id || 0) !== Number(req.user.id)) continue;
         pendentes.push({
           tipo: "rescisao",
@@ -5872,7 +7686,7 @@ app.get("/api/aprovacoes-pendentes", requireAnyApprovalPermission, async (req, r
           aprovacoes,
           approveUrl: `/api/rescisoes/${rescisao.id}/aprovar`,
           rejectUrl: `/api/rescisoes/${rescisao.id}/reprovar`,
-          reportUrl: `/api/rescisoes/${rescisao.id}/relatorio`,
+          reportUrl: `/rescisao-relatorio.html?id=${encodeURIComponent(rescisao.id)}`,
           approveBody: {},
         });
       }
@@ -6016,8 +7830,32 @@ app.post("/api/reembolso/prestacoes/:id/aprovar-superior", requirePermission("re
     );
     const nextStep = await nextReembolsoApprovalStep(req.params.id);
     let dataPagamento = null;
+    let emailFinanceiro = null;
+    let emailProximoAprovador = null;
     if (nextStep) {
       await pool.query("UPDATE rd_reembolso_prestacoes SET updated_at = NOW() WHERE id = ?", [req.params.id]);
+      try {
+        const detalhe = await reembolsoPrestacaoEmailResumo(req.params.id, "Uma prestacao de contas de reembolso avancou para sua etapa de aprovacao.");
+        emailProximoAprovador = await sendReembolsoApprovalEmailsTo(req, {
+          titulo: `Prestação ${prestacao.numero || req.params.id} aguardando aprovação`,
+          detalhe,
+          link: appUrl(req, `/aprovacoes.html?tipo=reembolso_superior&id=${encodeURIComponent(req.params.id)}`),
+          emails: [nextStep.email],
+          prestacaoId: Number(req.params.id),
+        });
+        if (emailProximoAprovador?.falhas?.length) {
+          await pool.query(
+            "INSERT INTO rd_reembolso_historico (prestacao_id, usuario_id, acao, descricao, dados_json, created_at) VALUES (?, ?, 'falha_email_aprovacao', ?, ?, NOW())",
+            [req.params.id, req.user.id, `Falha ao enviar e-mail para ${nextStep.nome}.`, JSON.stringify(emailProximoAprovador.falhas)],
+          );
+        }
+      } catch (emailError) {
+        emailProximoAprovador = { sent: false, reason: emailError.message || "Falha ao enviar e-mail.", enviados: [], falhas: [{ nome: nextStep.nome, email: nextStep.email, erro: emailError.message || "Falha ao enviar e-mail." }] };
+        await pool.query(
+          "INSERT INTO rd_reembolso_historico (prestacao_id, usuario_id, acao, descricao, dados_json, created_at) VALUES (?, ?, 'falha_email_aprovacao', ?, ?, NOW())",
+          [req.params.id, req.user.id, `Falha ao enviar e-mail para ${nextStep.nome}.`, JSON.stringify(emailProximoAprovador.falhas)],
+        );
+      }
     } else {
       try {
         dataPagamento = calcularDataPagamentoReembolso(prestacao.created_at, new Date()) || fallbackDataPagamentoReembolso();
@@ -6028,12 +7866,23 @@ app.post("/api/reembolso/prestacoes/:id/aprovar-superior", requirePermission("re
         "UPDATE rd_reembolso_prestacoes SET status = 'em_validacao_financeira', aprovado_superior_em = NOW(), data_pagamento_prevista = ?, updated_at = NOW() WHERE id = ?",
         [dataPagamento, req.params.id],
       );
+      emailFinanceiro = await sendFinanceActionEmail(req, {
+        titulo: `Prestacao ${prestacao.numero || req.params.id} aprovada`,
+        detalhe: `Prestacao aprovada pelos aprovadores. Total despesas ${formatCurrency(prestacao.total_despesas)}, a reembolsar ${formatCurrency(prestacao.valor_reembolsar)}, a devolver ${formatCurrency(prestacao.saldo_devolver)}. Aguarda acao financeira.`,
+        link: reembolsoAppUrl(req, `/?prestacao=${encodeURIComponent(req.params.id)}`),
+      });
+      if (emailFinanceiro?.falhas?.length) {
+        await pool.query(
+          "INSERT INTO rd_reembolso_historico (prestacao_id, usuario_id, acao, descricao, dados_json, created_at) VALUES (?, ?, 'falha_email_financeiro', ?, ?, NOW())",
+          [req.params.id, req.user.id, "Falha ao avisar financeiro.", JSON.stringify(emailFinanceiro.falhas)],
+        );
+      }
     }
     await pool.query(
       "INSERT INTO rd_reembolso_historico (prestacao_id, usuario_id, acao, descricao, dados_json, created_at) VALUES (?, ?, 'aprovou_superior', 'Superior aprovou a prestacao pela central de aprovacoes.', NULL, NOW())",
       [req.params.id, req.user.id],
     );
-    res.json({ ok: true, autenticacao: codigo, data_pagamento_prevista: dataPagamento, proxima_etapa: nextStep?.nome || "Financeiro" });
+    res.json({ ok: true, autenticacao: codigo, data_pagamento_prevista: dataPagamento, proxima_etapa: nextStep?.nome || "Financeiro", emailProximoAprovador, emailFinanceiro });
   } catch (error) {
     console.error("Erro ao aprovar reembolso superior", error);
     res.status(500).json({ error: error.message || "Nao foi possivel aprovar o reembolso." });
@@ -6130,7 +7979,12 @@ app.post("/api/reembolso/adiantamentos/:id/aprovar", requirePermission("reembols
       "UPDATE rd_reembolso_adiantamentos SET status = 'aprovado', aprovado_por = ?, aprovado_em = NOW(), updated_at = NOW() WHERE id = ?",
       [req.user.id, req.params.id],
     );
-    res.json({ ok: true });
+    const emailFinanceiro = await sendFinanceActionEmail(req, {
+      titulo: `Adiantamento ${adiantamento.numero || req.params.id} aprovado`,
+      detalhe: `Adiantamento de despesas no valor de ${formatCurrency(adiantamento.valor)} aprovado e aguardando acao financeira.`,
+      link: reembolsoAppUrl(req, `/?adiantamento=${encodeURIComponent(req.params.id)}`),
+    });
+    res.json({ ok: true, emailFinanceiro });
   } catch (error) {
     res.status(500).json({ error: error.message || "Nao foi possivel aprovar o adiantamento de reembolso." });
   }
@@ -6198,6 +8052,20 @@ app.get("/api/folhas", async (req, res) => {
     }
     for (const row of rows) {
       row.temporaryOpen = isTemporaryOpenCompetencia(row.competencia);
+      if (row.status === "fechada") {
+        const [[approvalSummary]] = await pool.query(
+          `SELECT COUNT(DISTINCT fa.usuario_id) AS total
+             FROM folha_aprovacoes fa
+             JOIN approval_fluxos af ON af.tipo = 'folha' AND af.usuario_id = fa.usuario_id AND af.ativo = 1
+            WHERE fa.competencia = ? AND fa.decisao = 'aprovado'`,
+          [row.competencia],
+        );
+        const [[requiredSummary]] = await pool.query(
+          "SELECT COUNT(*) AS total FROM approval_fluxos WHERE tipo = 'folha' AND ativo = 1",
+        );
+        row.aprovada = Number(requiredSummary.total || 0) > 0
+          && Number(approvalSummary.total || 0) >= Number(requiredSummary.total || 0);
+      }
       if (row.status === "aberta") {
         const virtual = await buildFolhaAberta(row.competencia, req.user);
         Object.assign(row, virtual.folha, { id: row.id, status: row.status, temporaryOpen: true });
@@ -6253,7 +8121,9 @@ app.post("/api/folhas/:competencia/rascunho", async (req, res) => {
       [competencia, daysInCompetencia(competencia)],
     );
     await saveFolhaDraftRows(competencia, req.body?.itens || [], req.user?.id || null);
-    res.json({ ok: true });
+    const folhaData = await folhaDataForNfImport(competencia, false);
+    const nfsRevalidadas = await revalidateStoredNfsForFolhaData(competencia, folhaData);
+    res.json({ ok: true, nfsRevalidadas });
   } catch (error) {
     res.status(500).json({ error: error.message || "Nao foi possivel salvar o rascunho da folha." });
   }
@@ -6263,6 +8133,10 @@ app.get("/api/folhas/:competencia", async (req, res) => {
   try {
     const lotes = await getFolhaLotes(req.params.competencia);
     const [[folha]] = await pool.query("SELECT * FROM folhas WHERE competencia = ?", [req.params.competencia]);
+    const activeApprovalLote = folha
+      ? lotes.find((lote) => ["em_aprovacao", "fechado", "integrado_omie"].includes(lote.status)
+        && (!folha.approval_payload_hash || lote.payload_hash === folha.approval_payload_hash)) || null
+      : null;
     if (!folha) {
       const aberta = await buildFolhaAberta(req.params.competencia, req.user);
       aberta.aprovacoes = await getFolhaApprovalsForItems(req.params.competencia, aberta.itens);
@@ -6295,9 +8169,9 @@ app.get("/api/folhas/:competencia", async (req, res) => {
 
     const [itens] = await pool.query(
       `SELECT fi.*, p.nome, p.cpf, p.cnpj, p.razao_social, p.email, p.telefone,
-        f.nome AS funcao, d.nome AS departamento, pr.nome AS projeto,
+        f.nome AS funcao, d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo,
         p.salario_contrato, p.precificacao_tipo, p.valor_dia, p.data_admissao, p.data_rescisao, COALESCE(cli.nome, u.nome) AS unidade_nome,
-        (fi.valor_nf_emitida - fi.liquido_pagar) AS diferenca_nf
+        (fi.valor_nf_emitida - (fi.liquido_pagar + fi.desconto_adiantamentos)) AS diferenca_nf
        FROM folha_itens fi
        JOIN prestadores p ON p.id = fi.prestador_id
        LEFT JOIN unidades u ON u.id = p.unidade_id
@@ -6311,17 +8185,26 @@ app.get("/api/folhas/:competencia", async (req, res) => {
     );
     const snapshotItens = itens.map((item) => folhaItemSnapshot(item, folha));
     if (folha.status === "aberta") {
-      const sanitizedOpenItems = snapshotItens.map((item) => sanitizeFolhaItem(item, req.user, { folhaStatus: folha.status }));
+      const openApprovals = await getFolhaApprovalsForItems(req.params.competencia, snapshotItens);
+      const folhaValueContext = { folhaStatus: folha.status, approved: openApprovals.approved, requiresApproved: true };
+      const sanitizedOpenItems = snapshotItens.map((item) => sanitizeFolhaItem(item, req.user, folhaValueContext));
       const itensComNf = await attachNfsToItems(req.params.competencia, sanitizedOpenItems);
-      return res.json({ folha, itens: itensComNf, aprovacoes: await getFolhaApprovalsForItems(req.params.competencia, itensComNf), lotes });
+      return res.json({ folha, itens: itensComNf, aprovacoes: openApprovals, lotes });
     }
     if (["em_aprovacao", "reprovada"].includes(folha.status) && !snapshotItens.length) {
       const aberta = await buildFolhaAberta(req.params.competencia, req.user);
       const folhaStatus = { ...aberta.folha, ...folha, status: folha.status, temporaryOpen: folha.temporaryOpen };
       const itensComNf = await attachNfsToItems(req.params.competencia, aberta.itens);
-      return res.json({ folha: folhaStatus, itens: itensComNf, aprovacoes: await getFolhaApprovalsForItems(req.params.competencia, itensComNf), lotes });
+      const aprovacoes = activeApprovalLote
+        ? await getFolhaApprovals(req.params.competencia, activeApprovalLote.payload_hash, pool, activeApprovalLote.id)
+        : await getFolhaApprovalsForItems(req.params.competencia, itensComNf);
+      return res.json({ folha: folhaStatus, itens: itensComNf, aprovacoes, lotes });
     }
 
+    const approvalForValues = activeApprovalLote
+      ? await getFolhaApprovals(req.params.competencia, activeApprovalLote.payload_hash, pool, activeApprovalLote.id)
+      : await getFolhaApprovalsForItems(req.params.competencia, snapshotItens);
+    const folhaValueContext = { folhaStatus: folha.status, approved: approvalForValues.approved, requiresApproved: true };
     const adjustedItens = folha.temporaryOpen
       ? snapshotItens.map((item) => {
         const diasTrabalhados = folhaDaysForPrestador(item, req.params.competencia);
@@ -6331,10 +8214,10 @@ app.get("/api/folhas/:competencia", async (req, res) => {
           dias_trabalhados: diasTrabalhados,
           valor_dias: valorDias,
         };
-      }).filter((item) => item.dias_trabalhados > 0).map((item) => sanitizeFolhaItem(item, req.user, { folhaStatus: folha.status }))
-      : snapshotItens.map((item) => sanitizeFolhaItem(item, req.user, { folhaStatus: folha.status }));
+      }).filter((item) => item.dias_trabalhados > 0).map((item) => sanitizeFolhaItem(item, req.user, folhaValueContext))
+      : snapshotItens.map((item) => sanitizeFolhaItem(item, req.user, folhaValueContext));
     const itensComNf = await attachNfsToItems(req.params.competencia, adjustedItens);
-    res.json({ folha, itens: itensComNf, aprovacoes: await getFolhaApprovalsForItems(req.params.competencia, itensComNf), lotes });
+    res.json({ folha, itens: itensComNf, aprovacoes: approvalForValues, lotes });
   } catch {
     res.status(500).json({ error: "Nao foi possivel carregar a folha." });
   }
@@ -6421,21 +8304,59 @@ app.post("/api/folhas/:competencia/enviar-aprovacao", async (req, res) => {
         pendentesNf,
       });
     }
+    const readyIds = [...new Set(readyItems.map((item) => Number(item.prestador_id || item.id)).filter(Boolean))];
+    if (readyIds.length) {
+      const [cadastroRows] = await pool.query(
+        `SELECT p.id, p.nome, p.razao_social,
+          c.omie_codigo AS categoria_omie_codigo,
+          pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo,
+          d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo
+         FROM prestadores p
+         LEFT JOIN categorias c ON c.id = p.categoria_id
+         LEFT JOIN projetos pr ON pr.id = p.projeto_id
+         LEFT JOIN departamentos d ON d.id = p.departamento_id
+         WHERE p.id IN (?)`,
+        [readyIds],
+      );
+      const cadastroPendencias = [];
+      for (const row of cadastroRows) {
+        const prestadorLabel = row.razao_social || row.nome || `Prestador ${row.id}`;
+        if (!/^\d+(?:\.\d+)*$/.test(String(row.categoria_omie_codigo || "").trim())) {
+          cadastroPendencias.push(`${prestadorLabel}: categoria sem codigo Omie.`);
+        }
+        if (row.projeto && !/^\d+(?:\.\d+)*$/.test(String(row.projeto_omie_codigo || "").trim())) {
+          cadastroPendencias.push(`${prestadorLabel}: projeto sem codigo Omie.`);
+        }
+        if (row.departamento && !/^\d+(?:\.\d+)*$/.test(String(row.departamento_omie_codigo || "").trim())) {
+          cadastroPendencias.push(`${prestadorLabel}: departamento sem codigo Omie.`);
+        }
+      }
+      if (cadastroPendencias.length) {
+        return res.status(400).json({
+          error: `Auditoria antes da aprovacao encontrou pendencias de cadastro:\n${cadastroPendencias.slice(0, 20).join("\n")}${cadastroPendencias.length > 20 ? `\n... mais ${cadastroPendencias.length - 20} item(ns).` : ""}`,
+          pendenciasCadastro: cadastroPendencias,
+        });
+      }
+    }
     const approvers = await getMandatoryApprovers(pool, "folha");
     if (!approvers.length) {
       return res.status(400).json({ error: "Nao ha aprovadores obrigatorios cadastrados. Configure usuarios com perfil/permissao de aprovador." });
     }
-    const lote = await createFolhaLote(competencia, readyItems, req.user?.id || null);
+    const readyItemsComNf = await prepareFolhaApprovalEmailItems(competencia, readyItems);
+    const lote = await createFolhaLote(competencia, readyItemsComNf, req.user?.id || null);
     const payloadHash = lote.payload_hash;
+    await pool.query("UPDATE folhas SET status = 'em_aprovacao', approval_payload_hash = ? WHERE competencia = ?", [payloadHash, competencia]);
     await pool.query("DELETE FROM folha_aprovacoes WHERE lote_id = ? AND payload_hash <> ?", [lote.id, payloadHash]);
+    const aprovacoes = await getFolhaApprovals(competencia, payloadHash, pool, lote.id);
     const result = await sendApprovalRequestEmails(req, {
       titulo: `Folha PJ ${competencia} pronta para aprovação`,
       detalhe: `A folha PJ da competência ${competencia} já está pronta para análise dos aprovadores.`,
       link: appUrl(req, `/aprovacoes.html?tipo=folha&id=${encodeURIComponent(competencia)}&lote=${encodeURIComponent(lote.id)}`),
       approvers: [approvers[0]],
       tipo: "folha",
+      demonstrativoHtml: renderFolhaApprovalEmailDemonstrativo(competencia, readyItemsComNf, { lote, pendentesNf, baseUrl: appUrl(req, "/"), aprovacoes }),
     });
-    res.json({ ...result, lote, pendentesNf, aprovacoes: await getFolhaApprovals(competencia, payloadHash, pool, lote.id) });
+    res.json({ ...result, folha: { competencia, status: "em_aprovacao" }, lote, pendentesNf, aprovacoes });
   } catch (error) {
     res.status(500).json({ error: error.message || "Nao foi possivel enviar a folha para aprovacao." });
   }
@@ -6456,8 +8377,9 @@ app.post("/api/folhas/:competencia/aprovar", async (req, res) => {
       [competencia, req.body.lote_id || null],
     );
     if (!lote) return res.status(400).json({ error: "Nenhum lote em aprovacao para esta competencia." });
-    const loteItens = lote.itens_json ? JSON.parse(lote.itens_json) : [];
-    const itens = normalizeApprovalItems((req.body.itens || []).length ? req.body.itens : loteItens);
+    const loteItens = parseJsonValue(lote.itens_json, []);
+    const emailItensSource = (req.body.itens || []).length ? req.body.itens : loteItens;
+    const itens = normalizeApprovalItems(emailItensSource);
     if (!itens.length) return res.status(400).json({ error: "Nao ha itens para aprovar." });
     const payloadHash = approvalPayloadHash(competencia, itens, lote.id);
     if (lote.payload_hash && lote.payload_hash !== payloadHash) {
@@ -6476,19 +8398,27 @@ app.post("/api/folhas/:competencia/aprovar", async (req, res) => {
     const aprovacoes = await getFolhaApprovals(competencia, payloadHash, pool, lote.id);
     let fechamentoAutomatico = false;
     let emailProximo = null;
+    let emailFinanceiro = null;
     if (aprovacoes.approved) {
       await autoCloseApprovedFolha(competencia, itens, pool, lote.id);
       fechamentoAutomatico = true;
+      emailFinanceiro = await sendFinanceActionEmail(req, {
+        titulo: `Folha PJ ${competencia} aprovada`,
+        detalhe: `A folha PJ da competencia ${competencia} foi aprovada e fechada automaticamente. Aguarda acao financeira para relatorio e integracao Omie.`,
+        link: appUrl(req, "/"),
+      });
     } else {
+      const emailItens = await prepareFolhaApprovalEmailItems(competencia, emailItensSource);
       emailProximo = await sendNextApprovalEmail(req, {
         tipo: "folha",
         titulo: `Folha PJ ${competencia} aguardando aprovação`,
         detalhe: `A folha PJ da competência ${competencia} foi aprovada na etapa anterior e aguarda sua análise.`,
         link: appUrl(req, `/aprovacoes.html?tipo=folha&id=${encodeURIComponent(competencia)}&lote=${encodeURIComponent(lote.id)}`),
         aprovacoes,
+        demonstrativoHtml: renderFolhaApprovalEmailDemonstrativo(competencia, emailItens, { lote, baseUrl: appUrl(req, "/"), aprovacoes }),
       });
     }
-    res.json({ ok: true, aprovacoes, fechamentoAutomatico, emailProximo });
+    res.json({ ok: true, aprovacoes, fechamentoAutomatico, emailProximo, emailFinanceiro });
   } catch (error) {
     res.status(500).json({ error: error.message || "Nao foi possivel registrar a aprovacao." });
   }
@@ -6506,7 +8436,7 @@ app.post("/api/folhas/:competencia/reprovar", async (req, res) => {
       [competencia, req.body.lote_id || null],
     );
     if (!lote) return res.status(400).json({ error: "Nenhum lote em aprovacao para esta competencia." });
-    const loteItens = lote.itens_json ? JSON.parse(lote.itens_json) : [];
+    const loteItens = parseJsonValue(lote.itens_json, []);
     const itens = normalizeApprovalItems((req.body.itens || []).length ? req.body.itens : loteItens);
     const payloadHash = approvalPayloadHash(competencia, itens, lote.id);
     if (lote.payload_hash && lote.payload_hash !== payloadHash) {
@@ -6610,6 +8540,10 @@ app.post("/api/folhas/:competencia/prestadores/:prestadorId/nf", nfUpload.single
         "UPDATE folha_itens SET numero_nf = ?, valor_nf_emitida = ? WHERE id = ?",
         [normalizeNfNumber(nfData.numero_nf) || null, nfData.valor_nf || null, folhaItem.id],
       );
+    } else if (!folhaItem?.id) {
+      const folhaData = await folhaDataForNfImport(competencia, false);
+      const openItem = folhaData.itens.find((row) => Number(row.prestador_id || row.id) === Number(prestadorId));
+      await upsertOpenFolhaDraftNf(competencia, prestadorId, openItem || {}, nfData, pool, req.user.id);
     }
 
     res.status(201).json({
@@ -6707,11 +8641,21 @@ app.delete("/api/nfs/:id", async (req, res) => {
   }
 });
 
+app.get("/api/folhas/:competencia/checklist-omie", async (req, res) => {
+  try {
+    const checklist = await buildFolhaOmieChecklist({
+      competencia: req.params.competencia,
+      loteId: req.query.lote_id || null,
+      user: req.user,
+    });
+    res.json({ ok: checklist.erros.length === 0, checklist });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Nao foi possivel auditar a integracao Omie." });
+  }
+});
+
 app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
   try {
-    if (!omieConfigured()) {
-      return res.status(400).json({ error: "Configure App Key e App Secret da Omie antes de integrar." });
-    }
     const competencia = req.params.competencia;
     const [[folha]] = await pool.query("SELECT * FROM folhas WHERE competencia = ?", [competencia]);
     if (!folha) return res.status(404).json({ error: "Folha nao encontrada." });
@@ -6719,68 +8663,24 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
       "SELECT id FROM folha_lotes WHERE competencia = ? AND status = 'fechado' AND id = COALESCE(?, id) LIMIT 1",
       [competencia, req.body?.lote_id || null],
     );
-    if (folha.status !== "fechada" && !loteFechado) return res.status(400).json({ error: "Somente lotes fechados podem ser integrados na Omie." });
-    const [approvalItems] = await pool.query(
-      `SELECT prestador_id, dias_trabalhados, adicoes, bonus, descontos_manual, valor_nf_emitida, numero_nf
-       FROM folha_itens
-       WHERE folha_id = ? AND (? IS NULL OR lote_id = ?)
-       ORDER BY prestador_id`,
-      [folha.id, req.body?.lote_id || null, req.body?.lote_id || null],
-    );
-    const aprovacoes = await getFolhaApprovalsForItems(competencia, approvalItems, pool, req.body?.lote_id || loteFechado?.id || null);
-    if (!aprovacoes.approved) {
-      return res.status(400).json({ error: "A folha precisa de 3 aprovacoes validas antes de integrar com a Omie.", aprovacoes });
+    const checklist = await buildFolhaOmieChecklist({
+      competencia,
+      loteId: req.body?.lote_id || loteFechado?.id || null,
+      user: req.user,
+    });
+    if (checklist.erros.length) {
+      return res.status(400).json({
+        error: "Checklist Omie encontrou pendencias antes da integracao.",
+        checklist,
+      });
     }
 
-    let [itens] = await pool.query(
-      `SELECT fi.id AS folha_item_id, fi.dias_trabalhados, fi.salario_base, fi.valor_dias, fi.adicoes, fi.bonus,
-        fi.descontos_manual, fi.desconto_adiantamentos, fi.valor_nf_previsto, fi.valor_nf_emitida,
-        fi.numero_nf, fi.liquido_pagar, fi.omie_status,
-        p.id AS prestador_id, p.nome, p.razao_social, p.cpf, p.cnpj, p.email, p.telefone,
-        p.banco, p.agencia, p.conta,
-        p.omie_codigo_cliente, p.omie_codigo_integracao,
-        c.nome AS categoria, c.omie_codigo AS categoria_omie_codigo,
-        d.nome AS departamento, pr.nome AS projeto
-       FROM folha_itens fi
-       JOIN prestadores p ON p.id = fi.prestador_id
-       LEFT JOIN categorias c ON c.id = p.categoria_id
-       LEFT JOIN departamentos d ON d.id = p.departamento_id
-       LEFT JOIN projetos pr ON pr.id = p.projeto_id
-       WHERE fi.folha_id = ?
-         AND COALESCE(NULLIF(fi.valor_nf_emitida, 0), fi.valor_nf_previsto, fi.liquido_pagar) > 0
-         AND fi.omie_status <> 'integrado'
-         AND (? IS NULL OR fi.lote_id = ?)
-       ORDER BY p.nome, p.razao_social`,
-      [folha.id, req.body?.lote_id || null, req.body?.lote_id || null],
-    );
+    let itens = await listarFolhaOmieIntegrationItems(folha.id, req.body?.lote_id || null, true);
 
     itens = itens.map((item) => folhaItemSnapshot(item, folha));
-
-    if (itens.some((item) => !String(item.categoria_omie_codigo || "").trim())) {
-      await syncOmieCategorias();
-      [itens] = await pool.query(
-        `SELECT fi.id AS folha_item_id, fi.dias_trabalhados, fi.salario_base, fi.valor_dias, fi.adicoes, fi.bonus,
-          fi.descontos_manual, fi.desconto_adiantamentos, fi.valor_nf_previsto, fi.valor_nf_emitida,
-          fi.numero_nf, fi.liquido_pagar, fi.omie_status,
-          p.id AS prestador_id, p.nome, p.razao_social, p.cpf, p.cnpj, p.email, p.telefone,
-          p.banco, p.agencia, p.conta,
-          p.omie_codigo_cliente, p.omie_codigo_integracao,
-          c.nome AS categoria, c.omie_codigo AS categoria_omie_codigo,
-          d.nome AS departamento, pr.nome AS projeto
-         FROM folha_itens fi
-         JOIN prestadores p ON p.id = fi.prestador_id
-         LEFT JOIN categorias c ON c.id = p.categoria_id
-         LEFT JOIN departamentos d ON d.id = p.departamento_id
-         LEFT JOIN projetos pr ON pr.id = p.projeto_id
-         WHERE fi.folha_id = ?
-           AND COALESCE(NULLIF(fi.valor_nf_emitida, 0), fi.valor_nf_previsto, fi.liquido_pagar) > 0
-           AND fi.omie_status <> 'integrado'
-           AND (? IS NULL OR fi.lote_id = ?)
-         ORDER BY p.nome, p.razao_social`,
-        [folha.id, req.body?.lote_id || null, req.body?.lote_id || null],
-      );
-      itens = itens.map((item) => folhaItemSnapshot(item, folha));
-    }
+    const totalPendentesAntesDoLote = itens.length;
+    const batchSize = Math.max(1, Number(process.env.OMIE_FOLHA_BATCH_SIZE || 10));
+    itens = itens.slice(0, batchSize);
 
     const invalidCategory = itens.filter((item) => !/^\d+(?:\.\d+)*$/.test(String(item.categoria_omie_codigo || "").trim()));
     if (invalidCategory.length) {
@@ -6797,78 +8697,222 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
     const vencimento = omieDueDateForCompetencia(competencia);
     const contaCorrenteId = await resolveOmieContaCorrenteId();
     const integrados = [];
+    const anexosAtualizados = [];
     const erros = [];
 
+    const baixasAtualizadas = [];
+    let fase = itens.length ? "titulos" : "pendencias";
     let bloqueioOmie = null;
     let erroEstrutural = null;
-    for (const item of itens) {
-      try {
-        const fornecedorCodigo = await ensureOmiePrestador(item, { allowCreate: req.body?.cadastrar_prestadores_omie === true });
-        const [codigoProjeto, codigoDepartamento] = await Promise.all([
-          resolveOmieProjetoPorNome(item.projeto),
-          resolveOmieDepartamentoPorNome(item.departamento),
-        ]);
-        const payload = omieContaPagarPayload({
-          competencia,
-          item,
-          fornecedorCodigo,
-          contaCorrenteId,
-          vencimento,
-          codigoProjeto,
-          codigoDepartamento,
-        });
-        const result = await omieCall("contaPagar", "UpsertContaPagar", payload);
-        const codigoLancamento = Number(result.codigo_lancamento_omie || result.codigo_lancamento || result.codigo || 0) || null;
-        const compensacao = await compensarFolhaItemComAdiantamento({
-          competencia,
-          item,
-          contaPagarId: codigoLancamento,
-          dataCompensacao: vencimento,
-        });
-        const anexos = await enviarAnexosFolhaItemOmie(
-          { ...item, omie_codigo_integracao: payload.codigo_lancamento_integracao },
-          competencia,
-          codigoLancamento,
-        );
-        await pool.query(
-          `UPDATE folha_itens
-           SET omie_status = 'integrado', omie_codigo_lancamento = ?, omie_codigo_integracao = ?,
-             omie_erro = NULL, omie_integrado_em = NOW()
-           WHERE id = ?`,
-          [codigoLancamento, payload.codigo_lancamento_integracao, item.folha_item_id],
-        );
-        integrados.push({
-          prestador: item.razao_social || item.nome,
-          codigo_lancamento_integracao: payload.codigo_lancamento_integracao,
-          codigo_lancamento_omie: codigoLancamento,
-          compensacao_adiantamento: compensacao.valor || 0,
-          anexos: anexos.length,
-        });
-      } catch (error) {
-        const message = error.message || "Falha ao integrar lancamento.";
-        await pool.query(
-          `UPDATE folha_itens
-           SET omie_status = 'erro', omie_erro = ?, omie_integrado_em = NULL
-           WHERE id = ?`,
-          [message, item.folha_item_id],
-        );
-        erros.push({ prestador: item.razao_social || item.nome, error: message });
-        if (error.code === "OMIE_PRESTADOR_PENDENTE") {
-          return res.status(409).json({
-            code: error.code,
-            error: "Existe prestador sem cadastro no Omie. Deseja cadastrá-lo como fornecedor PJ?",
-            prestadores: [error.prestador],
-            integrados,
-            erros,
+
+    if (itens.length) {
+      for (const item of itens) {
+        try {
+          const [codigoProjeto, codigoDepartamento] = await Promise.all([
+            resolveOmieProjetoCodigo(item),
+            resolveOmieDepartamentoCodigo(item),
+          ]);
+          const { payload, result } = await upsertContaPagarFolhaItem({
+            competencia,
+            item,
+            contaCorrenteId,
+            vencimento,
+            codigoProjeto,
+            codigoDepartamento,
           });
+          const codigoLancamento = Number(result.codigo_lancamento_omie || result.codigo_lancamento || result.codigo || 0) || null;
+          await pool.query(
+            `UPDATE folha_itens
+             SET omie_status = 'integrado', omie_codigo_lancamento = ?, omie_codigo_integracao = ?,
+               omie_erro = NULL, omie_integrado_em = NOW(),
+               omie_baixa_status = CASE WHEN COALESCE(desconto_adiantamentos, 0) > 0 THEN 'pendente' ELSE 'dispensado' END,
+               omie_baixa_erro = NULL
+             WHERE id = ?`,
+            [codigoLancamento, payload.codigo_lancamento_integracao, item.folha_item_id],
+          );
+          let compensacao = { valor: 0, skipped: true };
+          let anexos = [];
+          if (money(item.desconto_adiantamentos || 0) > 0) {
+            try {
+              compensacao = await compensarFolhaItemComAdiantamento({
+                competencia,
+                item,
+                contaPagarId: codigoLancamento,
+                dataCompensacao: vencimento,
+              });
+              await pool.query(
+                "UPDATE folha_itens SET omie_baixa_status = 'integrado', omie_baixa_erro = NULL, omie_baixa_em = NOW() WHERE id = ?",
+                [item.folha_item_id],
+              );
+              baixasAtualizadas.push({ prestador: item.razao_social || item.nome, valor: compensacao.valor || 0 });
+            } catch (error) {
+              const message = error.message || "Falha ao compensar adiantamento no Omie.";
+              await pool.query(
+                "UPDATE folha_itens SET omie_baixa_status = 'erro', omie_baixa_erro = ? WHERE id = ?",
+                [message, item.folha_item_id],
+              );
+              erros.push({ prestador: item.razao_social || item.nome, error: `Titulo integrado, mas falhou ao compensar adiantamento: ${message}` });
+              if (isOmieRateLimitError(error)) bloqueioOmie = { message, retrySeconds: parseOmieRetrySeconds(message) };
+              if (isOmieStructuralError(error)) erroEstrutural = { message };
+            }
+          }
+          if (!bloqueioOmie && !erroEstrutural) {
+            try {
+              anexos = await enviarAnexosFolhaItemOmie(
+                { ...item, omie_codigo_integracao: payload.codigo_lancamento_integracao },
+                competencia,
+                codigoLancamento,
+              );
+              if (anexos?.length) anexosAtualizados.push({ prestador: item.razao_social || item.nome, anexos: anexos.length });
+            } catch (error) {
+              const message = error.message || "Falha ao anexar NF/demonstrativo.";
+              erros.push({ prestador: item.razao_social || item.nome, error: `Titulo integrado, mas falhou ao anexar NF/demonstrativo: ${message}` });
+              if (isOmieRateLimitError(error)) bloqueioOmie = { message, retrySeconds: parseOmieRetrySeconds(message) };
+              if (isOmieStructuralError(error)) erroEstrutural = { message };
+            }
+          }
+          integrados.push({
+            folha_item_id: item.folha_item_id,
+            prestador: item.razao_social || item.nome,
+            codigo_lancamento_integracao: payload.codigo_lancamento_integracao,
+            codigo_lancamento_omie: codigoLancamento,
+            compensacao_adiantamento: compensacao.valor || 0,
+            anexos: anexos.length,
+          });
+          if (bloqueioOmie || erroEstrutural) break;
+        } catch (error) {
+          const message = error.message || "Falha ao integrar lancamento.";
+          await pool.query(
+            `UPDATE folha_itens
+             SET omie_status = 'erro', omie_erro = ?, omie_integrado_em = NULL
+             WHERE id = ?`,
+            [message, item.folha_item_id],
+          );
+          erros.push({ prestador: item.razao_social || item.nome, error: message });
+          if (error.code === "OMIE_PRESTADOR_PENDENTE") {
+            return res.status(409).json({
+              code: error.code,
+              error: "Existe prestador sem cadastro no Omie. Deseja cadastra-lo como fornecedor PJ?",
+              prestadores: [error.prestador],
+              integrados,
+              baixasAtualizadas,
+              anexosAtualizados,
+              erros,
+            });
+          }
+          if (isOmieRateLimitError(error)) {
+            bloqueioOmie = { message, retrySeconds: parseOmieRetrySeconds(message) };
+            break;
+          }
+          if (isOmieStructuralError(error)) {
+            erroEstrutural = { message };
+            break;
+          }
         }
-        if (isOmieRateLimitError(error)) {
-          bloqueioOmie = { message, retrySeconds: parseOmieRetrySeconds(message) };
-          break;
+      }
+    } else {
+      const baixaBatchSize = Math.max(1, Number(process.env.OMIE_FOLHA_BAIXA_BATCH_SIZE || 3));
+      const [itensBaixa] = await pool.query(
+        `SELECT fi.id AS folha_item_id, fi.dias_trabalhados, fi.salario_base, fi.valor_dias, fi.adicoes, fi.bonus,
+          fi.descontos_manual, fi.desconto_adiantamentos, fi.valor_nf_previsto, fi.valor_nf_emitida,
+          fi.numero_nf, fi.liquido_pagar, fi.omie_status, fi.omie_codigo_lancamento, fi.omie_codigo_integracao,
+          p.id AS prestador_id, p.nome, p.razao_social, p.cpf, p.cnpj, p.email, p.telefone,
+          p.banco, p.agencia, p.conta,
+          p.omie_codigo_cliente, p.omie_codigo_integracao AS prestador_omie_codigo_integracao,
+          c.nome AS categoria, c.omie_codigo AS categoria_omie_codigo,
+          d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
+         FROM folha_itens fi
+         JOIN prestadores p ON p.id = fi.prestador_id
+         LEFT JOIN categorias c ON c.id = p.categoria_id
+         LEFT JOIN departamentos d ON d.id = p.departamento_id
+         LEFT JOIN projetos pr ON pr.id = p.projeto_id
+         WHERE fi.folha_id = ?
+           AND fi.omie_status = 'integrado'
+           AND fi.omie_codigo_lancamento IS NOT NULL
+           AND COALESCE(fi.desconto_adiantamentos, 0) > 0
+           AND COALESCE(fi.omie_baixa_status, 'pendente') <> 'integrado'
+           AND (? IS NULL OR fi.lote_id = ?)
+         ORDER BY p.nome, p.razao_social
+         LIMIT ?`,
+        [folha.id, req.body?.lote_id || null, req.body?.lote_id || null, baixaBatchSize],
+      );
+
+      if (itensBaixa.length) {
+        fase = "baixas";
+        for (const row of itensBaixa) {
+          const item = folhaItemSnapshot(row, folha);
+          try {
+            const compensacao = await compensarFolhaItemComAdiantamento({
+              competencia,
+              item,
+              contaPagarId: row.omie_codigo_lancamento,
+              dataCompensacao: vencimento,
+            });
+            await pool.query(
+              "UPDATE folha_itens SET omie_baixa_status = 'integrado', omie_baixa_erro = NULL, omie_baixa_em = NOW() WHERE id = ?",
+              [item.folha_item_id],
+            );
+            baixasAtualizadas.push({ prestador: item.razao_social || item.nome, valor: compensacao.valor || 0 });
+          } catch (error) {
+            const message = error.message || "Falha ao compensar adiantamento no Omie.";
+            await pool.query(
+              "UPDATE folha_itens SET omie_baixa_status = 'erro', omie_baixa_erro = ? WHERE id = ?",
+              [message, item.folha_item_id],
+            );
+            erros.push({ prestador: item.razao_social || item.nome, error: `Titulo integrado, mas falhou ao compensar adiantamento: ${message}` });
+            if (isOmieRateLimitError(error)) {
+              bloqueioOmie = { message, retrySeconds: parseOmieRetrySeconds(message) };
+              break;
+            }
+            if (isOmieStructuralError(error)) {
+              erroEstrutural = { message };
+              break;
+            }
+          }
         }
-        if (isOmieStructuralError(error)) {
-          erroEstrutural = { message };
-          break;
+      } else if (!bloqueioOmie && !erroEstrutural) {
+        fase = "anexos";
+        const anexoBatchSize = Math.max(1, Number(process.env.OMIE_FOLHA_ANEXO_BATCH_SIZE || 2));
+        const [itensIntegradosComCodigo] = await pool.query(
+          `SELECT fi.id AS folha_item_id, fi.dias_trabalhados, fi.salario_base, fi.valor_dias, fi.adicoes, fi.bonus,
+            fi.descontos_manual, fi.desconto_adiantamentos, fi.valor_nf_previsto, fi.valor_nf_emitida,
+            fi.numero_nf, fi.liquido_pagar, fi.omie_status, fi.omie_codigo_lancamento, fi.omie_codigo_integracao,
+            p.id AS prestador_id, p.nome, p.razao_social, p.cpf, p.cnpj, p.email, p.telefone,
+            p.banco, p.agencia, p.conta,
+            p.omie_codigo_cliente, p.omie_codigo_integracao AS prestador_omie_codigo_integracao,
+            c.nome AS categoria, c.omie_codigo AS categoria_omie_codigo,
+            d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
+           FROM folha_itens fi
+           JOIN prestadores p ON p.id = fi.prestador_id
+           LEFT JOIN categorias c ON c.id = p.categoria_id
+           LEFT JOIN departamentos d ON d.id = p.departamento_id
+           LEFT JOIN projetos pr ON pr.id = p.projeto_id
+           WHERE fi.folha_id = ?
+             AND fi.omie_status = 'integrado'
+             AND fi.omie_codigo_lancamento IS NOT NULL
+             AND COALESCE(fi.omie_nf_anexo_status, 'pendente') <> 'integrado'
+             AND (? IS NULL OR fi.lote_id = ?)
+           ORDER BY p.nome, p.razao_social
+           LIMIT ?`,
+          [folha.id, req.body?.lote_id || null, req.body?.lote_id || null, anexoBatchSize],
+        );
+        for (const row of itensIntegradosComCodigo) {
+          const item = folhaItemSnapshot(row, folha);
+          try {
+            const anexos = await enviarAnexosFolhaItemOmie(item, competencia, row.omie_codigo_lancamento);
+            if (anexos?.length) anexosAtualizados.push({ prestador: item.razao_social || item.nome, anexos: anexos.length });
+          } catch (error) {
+            const message = error.message || "Falha ao anexar NF/demonstrativo.";
+            erros.push({ prestador: item.razao_social || item.nome, error: `Conta integrada, mas falhou ao anexar NF/demonstrativo: ${message}` });
+            if (isOmieRateLimitError(error)) {
+              bloqueioOmie = { message, retrySeconds: parseOmieRetrySeconds(message) };
+              break;
+            }
+            if (isOmieStructuralError(error)) {
+              erroEstrutural = { message };
+              break;
+            }
+          }
         }
       }
     }
@@ -6880,7 +8924,10 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
         vencimento,
         contaCorrenteId,
         integrados,
+        baixasAtualizadas,
+        anexosAtualizados,
         erros,
+        fase,
         erroEstrutural,
       });
     }
@@ -6892,12 +8939,15 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
         vencimento,
         contaCorrenteId,
         integrados,
+        baixasAtualizadas,
+        anexosAtualizados,
         erros,
+        fase,
         bloqueioOmie,
       });
     }
 
-    if (erros.length === 0 && integrados.length) {
+    if (erros.length === 0 && (integrados.length || baixasAtualizadas.length || anexosAtualizados.length)) {
       await pool.query(
         `UPDATE folha_lotes fl
          SET fl.status = 'integrado_omie', fl.integrado_em = NOW()
@@ -6905,13 +8955,69 @@ app.post("/api/folhas/:competencia/integrar-omie", async (req, res) => {
            AND fl.status = 'fechado'
            AND NOT EXISTS (
              SELECT 1 FROM folha_itens fi
-             WHERE fi.lote_id = fl.id AND fi.omie_status <> 'integrado'
+             WHERE fi.lote_id = fl.id
+               AND (
+                 fi.omie_status <> 'integrado'
+                 OR (COALESCE(fi.desconto_adiantamentos, 0) > 0 AND COALESCE(fi.omie_baixa_status, 'pendente') <> 'integrado')
+                 OR COALESCE(fi.omie_nf_anexo_status, 'pendente') <> 'integrado'
+               )
            )`,
         [competencia],
       );
     }
 
-    res.json({ ok: erros.length === 0, competencia, vencimento, contaCorrenteId, integrados, erros });
+    const [[pendenciasRow]] = await pool.query(
+      `SELECT COUNT(*) AS total
+         FROM folha_itens
+        WHERE folha_id = ?
+          AND COALESCE(NULLIF(valor_nf_emitida, 0), valor_nf_previsto, liquido_pagar) > 0
+          AND omie_status <> 'integrado'
+          AND (? IS NULL OR lote_id = ?)`,
+      [folha.id, req.body?.lote_id || null, req.body?.lote_id || null],
+    );
+    const [[baixasPendentesRow]] = await pool.query(
+      `SELECT COUNT(*) AS total
+         FROM folha_itens
+        WHERE folha_id = ?
+          AND omie_status = 'integrado'
+          AND COALESCE(desconto_adiantamentos, 0) > 0
+          AND COALESCE(omie_baixa_status, 'pendente') <> 'integrado'
+          AND (? IS NULL OR lote_id = ?)`,
+      [folha.id, req.body?.lote_id || null, req.body?.lote_id || null],
+    );
+    const [[anexosPendentesRow]] = await pool.query(
+      `SELECT COUNT(*) AS total
+         FROM folha_itens
+        WHERE folha_id = ?
+          AND omie_status = 'integrado'
+          AND omie_codigo_lancamento IS NOT NULL
+          AND COALESCE(omie_nf_anexo_status, 'pendente') <> 'integrado'
+          AND (? IS NULL OR lote_id = ?)`,
+      [folha.id, req.body?.lote_id || null, req.body?.lote_id || null],
+    );
+    const pendenciasTitulos = Number(pendenciasRow.total || 0);
+    const pendenciasBaixas = Number(baixasPendentesRow.total || 0);
+    const pendenciasAnexos = Number(anexosPendentesRow.total || 0);
+    const restantes = pendenciasTitulos + pendenciasBaixas + pendenciasAnexos;
+    res.json({
+      ok: erros.length === 0,
+      competencia,
+      vencimento,
+      contaCorrenteId,
+      fase,
+      integrados,
+      baixasAtualizadas,
+      anexosAtualizados,
+      erros,
+      lote_limite: batchSize,
+      total_pendentes_inicio: totalPendentesAntesDoLote + pendenciasBaixas + pendenciasAnexos,
+      pendencias: {
+        titulos: pendenciasTitulos,
+        baixas: pendenciasBaixas,
+        anexos: pendenciasAnexos,
+      },
+      restantes,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message || "Nao foi possivel integrar a folha na Omie." });
   }
@@ -6983,16 +9089,42 @@ app.get("/api/rescisoes", async (req, res) => {
   }
 });
 
+app.get("/api/rescisoes/:id/relatorio", async (req, res) => {
+  if (
+    !hasPermission(req.user, "generate_reports")
+    && !hasPermission(req.user, "manage_rescisoes")
+    && !hasPermission(req.user, "approve_folhas")
+  ) {
+    return res.status(403).send("Usuario sem permissao para gerar relatorio.");
+  }
+  try {
+    const [[rescisao]] = await pool.query(
+      `SELECT r.*, p.nome, p.razao_social, p.cpf, p.cnpj
+       FROM rescisoes r
+       JOIN prestadores p ON p.id = r.prestador_id
+       WHERE r.id = ?`,
+      [req.params.id],
+    );
+    if (!rescisao) return res.status(404).send("Rescisao nao encontrada.");
+    const pdf = await buildRescisaoReportPdf(rescisao);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="rescisao-${rescisao.id}.pdf"`);
+    return res.send(pdf);
+  } catch (error) {
+    return res.status(500).send(error.message || "Nao foi possivel gerar o relatorio da rescisao.");
+  }
+});
+
 app.post("/api/prestadores/:id/rescisao/calcular", async (req, res) => {
   const dataRescisao = req.body.data_rescisao;
   if (!dataRescisao) return res.status(400).json({ error: "Informe a data da rescisao." });
   if (!req.body.data_aviso) return res.status(400).json({ error: "Informe a data do aviso da rescisao." });
   const competenciaRescisao = dateCompetencia(dataRescisao);
-  if (competenciaRescisao < currentCompetencia() && !isTemporaryOpenCompetencia(competenciaRescisao)) {
-    return res.status(400).json({ error: "Rescisao nao pode ser registrada em periodo anterior ao mes aberto." });
-  }
 
   try {
+    if (!(await canRegisterRescisaoCompetencia(competenciaRescisao))) {
+      return res.status(400).json({ error: "Rescisao nao pode ser registrada em periodo anterior ao mes aberto." });
+    }
     const [[folhaFechada]] = await pool.query(
       "SELECT id FROM folhas WHERE competencia = ? AND status = 'fechada'",
       [competenciaRescisao],
@@ -7027,13 +9159,14 @@ app.post("/api/prestadores/:id/rescisao", async (req, res) => {
   if (!dataRescisao) return res.status(400).json({ error: "Informe a data da rescisao." });
   if (!req.body.data_aviso) return res.status(400).json({ error: "Informe a data do aviso da rescisao." });
   const competenciaRescisao = dateCompetencia(dataRescisao);
-  if (competenciaRescisao < currentCompetencia() && !isTemporaryOpenCompetencia(competenciaRescisao)) {
-    return res.status(400).json({ error: "Rescisao nao pode ser registrada em periodo anterior ao mes aberto." });
-  }
 
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
+    if (!(await canRegisterRescisaoCompetencia(competenciaRescisao))) {
+      await connection.rollback();
+      return res.status(400).json({ error: "Rescisao nao pode ser registrada em periodo anterior ao mes aberto." });
+    }
     const [[folhaFechada]] = await connection.query(
       "SELECT id FROM folhas WHERE competencia = ? AND status = 'fechada'",
       [competenciaRescisao],
@@ -7137,6 +9270,7 @@ app.post("/api/rescisoes/:id/enviar-aprovacao", async (req, res) => {
       link: appUrl(req, `/aprovacoes.html?tipo=rescisao&id=${encodeURIComponent(rescisao.id)}`),
       approvers: [approvers[0]],
       tipo: "rescisao",
+      demonstrativoHtml: await renderRescisaoApprovalEmailDemonstrativo(rescisao),
     });
     const payloadHash = rescisaoApprovalPayloadHash(rescisao);
     await pool.query(
@@ -7181,6 +9315,7 @@ app.post("/api/rescisoes/:id/aprovar", async (req, res) => {
     const aprovacoes = await getRescisaoApprovals(rescisao);
     let finalizada = false;
     let emailProximo = null;
+    let emailFinanceiro = null;
     if (aprovacoes.approved) {
       await pool.query("UPDATE rescisoes SET status = 'finalizada', finalizada_em = NOW() WHERE id = ?", [rescisao.id]);
       await pool.query(
@@ -7188,6 +9323,11 @@ app.post("/api/rescisoes/:id/aprovar", async (req, res) => {
         [rescisao.data_rescisao, rescisao.motivo || null, rescisao.prestador_id],
       );
       finalizada = true;
+      emailFinanceiro = await sendFinanceActionEmail(req, {
+        titulo: `Rescisao PJ de ${rescisao.razao_social || rescisao.nome || `prestador ${rescisao.prestador_id}`} aprovada`,
+        detalhe: `Rescisao com data ${formatDateBr(rescisao.data_rescisao)} e total a pagar ${formatCurrency(rescisao.total_pagar)} aprovada. Aguarda acao financeira para relatorio e integracao Omie.`,
+        link: appUrl(req, `/rescisao-relatorio.html?id=${encodeURIComponent(rescisao.id)}`),
+      });
     } else {
       emailProximo = await sendNextApprovalEmail(req, {
         tipo: "rescisao",
@@ -7195,9 +9335,10 @@ app.post("/api/rescisoes/:id/aprovar", async (req, res) => {
         detalhe: `A rescisão de ${rescisao.razao_social || rescisao.nome || ""} foi aprovada na etapa anterior e aguarda sua análise.`,
         link: appUrl(req, `/aprovacoes.html?tipo=rescisao&id=${encodeURIComponent(rescisao.id)}`),
         aprovacoes,
+        demonstrativoHtml: await renderRescisaoApprovalEmailDemonstrativo(rescisao),
       });
     }
-    res.json({ ok: true, aprovacoes, finalizada, emailProximo });
+    res.json({ ok: true, aprovacoes, finalizada, emailProximo, emailFinanceiro });
   } catch (error) {
     res.status(500).json({ error: error.message || "Nao foi possivel registrar a aprovacao da rescisao." });
   }
@@ -7364,7 +9505,7 @@ app.post("/api/rescisoes/:id/integrar-omie", async (req, res) => {
         p.banco, p.agencia, p.conta,
         p.omie_codigo_cliente, p.omie_codigo_integracao,
         c.nome AS categoria, c.omie_codigo AS categoria_omie_codigo,
-        d.nome AS departamento, pr.nome AS projeto
+        d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
        FROM rescisoes r
        JOIN prestadores p ON p.id = r.prestador_id
        LEFT JOIN categorias c ON c.id = p.categoria_id
@@ -7374,18 +9515,18 @@ app.post("/api/rescisoes/:id/integrar-omie", async (req, res) => {
       [req.params.id],
     );
     if (!rescisao) return res.status(404).json({ error: "Rescisao nao encontrada." });
-    if (rescisao.status !== "finalizada") return res.status(400).json({ error: "Somente rescisoes finalizadas podem ser integradas na Omie." });
+    if (!["finalizada", "erro_omie"].includes(rescisao.status)) return res.status(400).json({ error: "Somente rescisoes finalizadas podem ser integradas na Omie." });
     if (!nfValidatedOrSimoneException(req.user, rescisao)) return res.status(400).json({ error: "A NF precisa estar validada antes da integracao." });
     const aprovacoes = await getRescisaoApprovals(rescisao);
     if (!aprovacoes.approved) {
       return res.status(400).json({ error: "A rescisao precisa de 3 aprovacoes validas antes da Omie.", aprovacoes });
     }
     if (rescisao.omie_status === "integrado") return res.json({ integrados: [{ id: rescisao.id }], erros: [] });
-    const fornecedorCodigo = await ensureOmiePrestador(rescisao, { allowCreate: req.body?.cadastrar_prestadores_omie === true });
+    const fornecedorCodigo = await ensureOmiePrestador(rescisao, { allowCreate: true, verifyExisting: true });
     const categoriaCodigo = await resolveOmieCategoriaCodigo(rescisao);
     const [codigoProjeto, codigoDepartamento] = await Promise.all([
-      resolveOmieProjetoPorNome(rescisao.projeto),
-      resolveOmieDepartamentoPorNome(rescisao.departamento),
+      resolveOmieProjetoCodigo(rescisao),
+      resolveOmieDepartamentoCodigo(rescisao),
     ]);
     const contaCorrenteId = await resolveOmieContaCorrenteId();
     const payload = omieRescisaoContaPagarPayload({
@@ -7477,7 +9618,7 @@ app.post("/api/folhas", async (req, res) => {
 
     const [prestadores] = await connection.query(
       `SELECT p.*, COALESCE(cli.nome, u.nome) AS unidade_nome, fn.nome AS funcao, c.nome AS categoria,
-        c.omie_codigo AS categoria_omie_codigo, d.nome AS departamento, pr.nome AS projeto
+        c.omie_codigo AS categoria_omie_codigo, d.nome AS departamento, d.omie_codigo AS departamento_omie_codigo, pr.nome AS projeto, pr.omie_codigo AS projeto_omie_codigo
        FROM prestadores p
        LEFT JOIN unidades u ON u.id = p.unidade_id
        LEFT JOIN clientes cli ON cli.id = p.cliente_id

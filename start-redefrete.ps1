@@ -12,17 +12,15 @@ function Start-RedefreteApp {
 
   $listeners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
   if ($listeners) {
-    $localOnly = $listeners | Where-Object { $_.LocalAddress -eq "127.0.0.1" -or $_.LocalAddress -eq "::1" }
-    if ($localOnly) {
-      $processIds = $localOnly | Select-Object -ExpandProperty OwningProcess -Unique
-      foreach ($processId in $processIds) {
-        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    $processIds = $listeners | Select-Object -ExpandProperty OwningProcess -Unique
+    foreach ($processId in $processIds) {
+      try {
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+      } catch {
+        Write-Host "Nao foi possivel parar o processo $processId na porta ${Port}: $($_.Exception.Message)"
       }
-      Start-Sleep -Seconds 1
-    } else {
-      Write-Host "$Name ja esta rodando na porta $Port."
-      return
     }
+    Start-Sleep -Seconds 2
   }
 
   $env:HOST = "0.0.0.0"

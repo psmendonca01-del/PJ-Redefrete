@@ -8,6 +8,8 @@
   projetos: [],
   adiantamentos: [],
   rescisoes: [],
+  financeiroFila: [],
+  financeiroResumo: { total: 0, a_integrar: 0, valor: 0 },
   usuarios: [],
   folhas: [],
   folhaPreview: [],
@@ -26,6 +28,7 @@
     diff: "",
   },
   usuarioAccessFilter: "todos",
+  financeFilter: "todos",
   cadastroTipoAtivo: "categorias",
   authUser: null,
   cadastroConfig: {
@@ -42,6 +45,7 @@
   emailTemplates: [],
   emailTemplateVars: {},
   emailTemplateAtivo: "folha_nf",
+  approvalFlows: { tipos: [], approvers: [], flows: {} },
   prestadorStatusFilter: "todos",
 };
 
@@ -59,6 +63,9 @@ const el = {
   busyOverlay: document.querySelector("#busyOverlay"),
   busyTitle: document.querySelector("#busyTitle"),
   busyMessage: document.querySelector("#busyMessage"),
+  busyProgress: document.querySelector("#busyProgress"),
+  busyProgressLabel: document.querySelector("#busyProgressLabel"),
+  busyProgressPercent: document.querySelector("#busyProgressPercent"),
   currentUserName: document.querySelector("#currentUserName"),
   currentUserPerfil: document.querySelector("#currentUserPerfil"),
   changePassword: document.querySelector("#changePassword"),
@@ -72,6 +79,11 @@ const el = {
     adiantamentos: document.querySelector("#metricAdiantamentos"),
     folha: document.querySelector("#metricFolha"),
   },
+  financeiroTable: document.querySelector("#financeiroTable"),
+  financeFilter: document.querySelector("#financeFilter"),
+  financeMetricTotal: document.querySelector("#financeMetricTotal"),
+  financeMetricOmie: document.querySelector("#financeMetricOmie"),
+  financeMetricValor: document.querySelector("#financeMetricValor"),
   prestadorForm: document.querySelector("#prestadorForm"),
   prestadorModalTitle: document.querySelector("#prestadorModalTitle"),
   prestadorBackdrop: document.querySelector("#prestadorBackdrop"),
@@ -123,6 +135,9 @@ const el = {
   newUsuario: document.querySelector("#newUsuario"),
   closeUsuarioModal: document.querySelector("#closeUsuarioModal"),
   clearUsuario: document.querySelector("#clearUsuario"),
+  approvalFlowsForm: document.querySelector("#approvalFlowsForm"),
+  approvalFlowsConfig: document.querySelector("#approvalFlowsConfig"),
+  approvalFlowsStatus: document.querySelector("#approvalFlowsStatus"),
   folhasTable: document.querySelector("#folhasTable"),
   folhaPreview: document.querySelector("#folhaPreview"),
   folhaHint: document.querySelector("#folhaHint"),
@@ -276,6 +291,10 @@ function normalizeText(value) {
     .trim();
 }
 
+function onlyDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
 function decimalValue(value) {
   return Number(value || 0).toFixed(2);
 }
@@ -345,6 +364,21 @@ function currentCompetencia() {
   return todayIso().slice(0, 7);
 }
 
+function previousCompetencia(competencia = currentCompetencia()) {
+  const [year, month] = String(competencia || "").split("-").map(Number);
+  if (!year || !month) return "";
+  const date = new Date(year, month - 2, 1);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function defaultFolhaCompetencia() {
+  const atual = currentCompetencia();
+  const anterior = previousCompetencia(atual);
+  const folhaAnteriorAberta = state.folhas.find((folha) => folha.competencia === anterior && folha.status === "aberta");
+  if (folhaAnteriorAberta) return anterior;
+  return atual;
+}
+
 function temporaryMinCompetencia() {
   return state.appConfig.minEditableCompetencia || currentCompetencia();
 }
@@ -376,19 +410,48 @@ function toast(message) {
 }
 
 let busyDepth = 0;
+let busyProgressTimer = null;
 
-function showBusy(title = "Integrando com Omie", message = "Aguarde, estamos processando as informações.") {
+function setBusyProgress(percent = 0, label = "Processando") {
+  const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  if (el.busyProgress) {
+    el.busyProgress.classList.add("determinate");
+    el.busyProgress.style.setProperty("--progress-value", `${value}%`);
+  }
+  if (el.busyProgressPercent) el.busyProgressPercent.textContent = `${value}%`;
+  if (el.busyProgressLabel) el.busyProgressLabel.textContent = label;
+}
+
+function showBusy(title = "Integrando com Omie", message = "Aguarde, estamos processando as informações.", options = {}) {
   if (!el.busyOverlay) return;
   busyDepth += 1;
   if (el.busyTitle) el.busyTitle.textContent = title;
   if (el.busyMessage) el.busyMessage.textContent = message;
+  window.clearInterval(busyProgressTimer);
+  busyProgressTimer = null;
+  if (options.determinate) {
+    setBusyProgress(options.progress ?? 0, options.progressLabel || "Processando");
+  } else {
+    if (el.busyProgress) {
+      el.busyProgress.classList.remove("determinate");
+      el.busyProgress.style.removeProperty("--progress-value");
+    }
+    if (el.busyProgressPercent) el.busyProgressPercent.textContent = "";
+    if (el.busyProgressLabel) el.busyProgressLabel.textContent = "Processando";
+  }
   el.busyOverlay.hidden = false;
 }
 
 function hideBusy() {
   busyDepth = Math.max(0, busyDepth - 1);
   if (busyDepth > 0) return;
+  window.clearInterval(busyProgressTimer);
+  busyProgressTimer = null;
   if (el.busyOverlay) el.busyOverlay.hidden = true;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 async function api(path, options = {}) {
@@ -402,10 +465,16 @@ async function api(path, options = {}) {
       ...options,
       headers,
     });
-    const data = await response.json().catch(() => ({}));
+    const rawText = await response.text();
+    let data = {};
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      data = { error: rawText ? rawText.slice(0, 300) : "" };
+    }
     if (!response.ok) {
       if (response.status === 401) showLogin();
-      const error = new Error(data.error || (data.errors || []).join(" ") || "Falha na requisicao.");
+      const error = new Error(data.error || (data.errors || []).join(" ") || `Falha na requisicao (${response.status}).`);
       Object.assign(error, data, { status: response.status });
       throw error;
     }
@@ -429,6 +498,17 @@ function isAdminUser() {
 
 function canUseSimoneException(item) {
   return isAdminUser() && Number(item?.prestador_id || item?.id || 0) === simoneExceptionPrestadorId;
+}
+
+function expectedFolhaNfValue(item = {}) {
+  const liquido = Number(item.liquido_pagar || 0);
+  const adiantamentos = Number(item.desconto_adiantamentos || 0);
+  if (liquido || adiantamentos) return Number((liquido + adiantamentos).toFixed(2));
+  return Number((Number(item.valor_nf_previsto || 0) - Number(item.descontos_manual || 0)).toFixed(2));
+}
+
+function folhaNfDifference(item = {}) {
+  return Number((Number(item.valor_nf_emitida || 0) - expectedFolhaNfValue(item)).toFixed(2));
 }
 
 function nfValidatedOrSimoneException(item) {
@@ -474,8 +554,15 @@ function canViewPrestadores() {
   return hasPermission("view_prestadores");
 }
 
+function canViewFinanceiro() {
+  return hasPermission("integrate_omie") || hasPermission("reembolso_financeiro") || hasPermission("reembolso_integrar_omie");
+}
+
 function canSeeSensitiveValues(context = {}) {
-  if (context.folhaStatus === "fechada") return hasPermission("view_values_closed");
+  if (context.folhaStatus === "fechada") {
+    if (context.requiresApproved && !context.approved) return false;
+    return hasPermission("view_values_closed");
+  }
   return hasPermission("view_values_open");
 }
 
@@ -484,7 +571,9 @@ function sensitiveMoney(value, context = {}) {
 }
 
 function defaultViewForUser() {
+  if (state.authUser?.perfil === "financeiro" && canViewFinanceiro()) return "financeiro";
   if (canViewFolhas()) return "dashboard";
+  if (canViewFinanceiro()) return "financeiro";
   if (canViewPrestadores()) return "prestadores";
   return "dashboard";
 }
@@ -511,10 +600,12 @@ function applyAuthUi() {
   el.newAdiantamento.hidden = !hasPermission("manage_adiantamentos");
   el.newRescisao.hidden = !hasPermission("manage_rescisoes");
   document.querySelector('.nav-item[data-view="dashboard"]').hidden = !canViewFolhas();
+  document.querySelector('.nav-item[data-view="financeiro"]').hidden = !canViewFinanceiro();
   document.querySelector('.nav-item[data-view="prestadores"]').hidden = !canViewPrestadores();
   document.querySelector('.nav-item[data-view="adiantamentos"]').hidden = !hasPermission("manage_adiantamentos");
   document.querySelector('.nav-item[data-view="rescisoes"]').hidden = !canViewRescisoes();
   document.querySelector("#usuarioPanel").hidden = !hasPermission("manage_users");
+  document.querySelector("#approvalFlowsPanel").hidden = !hasPermission("manage_users");
   document.querySelector("#omiePanel").hidden = !hasPermission("manage_omie_config");
   const smtpPanel = document.querySelector("#smtpPanel");
   if (smtpPanel) smtpPanel.hidden = !hasPermission("manage_smtp");
@@ -538,6 +629,12 @@ function renderConfigHub() {
       permission: "manage_smtp",
       title: "E-mail Microsoft Graph",
       detail: "Envio de cobranças de NF",
+    },
+    {
+      id: "approvalFlowsPanel",
+      permission: "manage_users",
+      title: "Fluxos de aprovação",
+      detail: "Sequência de aprovadores por processo",
     },
     {
       id: "emailTemplatesPanel",
@@ -602,7 +699,7 @@ function setView(view) {
   document.querySelectorAll(".view").forEach((section) => section.classList.toggle("active", section.id === view));
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   const navItem = document.querySelector(`.nav-item[data-view="${view}"]`);
-  const titles = { folha: "Fechamento", configuracoes: "Configurações" };
+  const titles = { folha: "Fechamento", financeiro: "Financeiro", configuracoes: "Configurações" };
   el.pageTitle.textContent = navItem?.textContent || titles[view] || "Painel";
 }
 
@@ -837,7 +934,7 @@ function renderCadastrosConfig() {
         <form class="cadastro-form aux-form" data-cadastro-form="${activeTipo}">
           <input type="hidden" name="id" />
           <label>Nome<input name="nome" placeholder="Nome do cadastro" required /></label>
-          ${activeTipo === "categorias" || activeTipo === "departamentos" ? `<label>Código Omie<input name="omie_codigo" placeholder="Consulta automática se vazio" /></label>` : ""}
+          ${["categorias", "departamentos", "projetos"].includes(activeTipo) ? `<label>Código Omie<input name="omie_codigo" placeholder="Consulta automática se vazio" /></label>` : ""}
           ${activeTipo === "departamentos" ? `<label>Cliente<select name="cliente_id"><option value="">Sem cliente</option>${(state.cadastroConfig.clientes || []).filter((cliente) => cliente.ativo).map((cliente) => `<option value="${cliente.id}">${cliente.nome}</option>`).join("")}</select></label>` : ""}
           ${activeTipo === "departamentos" ? `<label>Projeto / Operação<select name="projeto_id"><option value="">Sem projeto</option>${(state.cadastroConfig.projetos || []).filter((projeto) => projeto.ativo).map((projeto) => `<option value="${projeto.id}">${projeto.nome}${projeto.cliente_nome ? ` | ${projeto.cliente_nome}` : ""}</option>`).join("")}</select></label>` : ""}
           ${activeTipo === "projetos" ? `<label>Cliente<select name="cliente_id"><option value="">Sem cliente</option>${(state.cadastroConfig.clientes || []).filter((cliente) => cliente.ativo).map((cliente) => `<option value="${cliente.id}">${cliente.nome}</option>`).join("")}</select></label>` : ""}
@@ -846,12 +943,12 @@ function renderCadastrosConfig() {
         </form>
         <div class="table-wrap compact-table aux-table">
           <table>
-            <thead><tr><th>Nome</th>${activeTipo === "categorias" || activeTipo === "departamentos" ? "<th>Código Omie</th>" : ""}${activeTipo === "departamentos" ? "<th>Cliente</th><th>Projeto / Operação</th>" : ""}${activeTipo === "projetos" ? "<th>Cliente</th>" : ""}<th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Nome</th>${["categorias", "departamentos", "projetos"].includes(activeTipo) ? "<th>Código Omie</th>" : ""}${activeTipo === "departamentos" ? "<th>Cliente</th><th>Projeto / Operação</th>" : ""}${activeTipo === "projetos" ? "<th>Cliente</th>" : ""}<th>Status</th><th></th></tr></thead>
             <tbody>
               ${rows.length ? rows.map((row) => `
                 <tr>
                   <td><strong>${row.nome}</strong></td>
-                  ${activeTipo === "categorias" || activeTipo === "departamentos" ? `<td>${row.omie_codigo || "-"}</td>` : ""}
+                  ${["categorias", "departamentos", "projetos"].includes(activeTipo) ? `<td>${row.omie_codigo || "-"}</td>` : ""}
                   ${activeTipo === "departamentos" ? `<td>${row.cliente_nome || "-"}</td><td>${row.projeto_nome || "-"}</td>` : ""}
                   ${activeTipo === "projetos" ? `<td>${row.cliente_nome || "-"}</td>` : ""}
                   <td>${row.ativo ? "Ativo" : "Inativo"}</td>
@@ -862,7 +959,7 @@ function renderCadastrosConfig() {
                     </div>
                   </td>
                 </tr>
-              `).join("") : `<tr><td colspan="${activeTipo === "departamentos" ? 6 : (activeTipo === "categorias" || activeTipo === "projetos" ? 4 : 3)}">Sem registros.</td></tr>`}
+              `).join("") : `<tr><td colspan="${activeTipo === "departamentos" ? 6 : (activeTipo === "projetos" ? 5 : activeTipo === "categorias" ? 4 : 3)}">Sem registros.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -1212,6 +1309,101 @@ async function loadUsuarios() {
   const data = await api("/api/auth/users");
   state.usuarios = data.usuarios;
   renderUsuarios();
+  renderConfigHub();
+}
+
+function approvalFlowSelect(tipo, index, selectedId) {
+  const options = state.approvalFlows.approvers.map((user) => `
+    <option value="${user.id}" ${Number(user.id) === Number(selectedId) ? "selected" : ""}>${escapeHtml(user.nome)} | ${escapeHtml(user.email || "")}</option>
+  `).join("");
+  return `
+    <div class="approval-flow-row" data-flow-row="${escapeHtml(tipo)}">
+      <span>${index + 1}º</span>
+      <select name="${escapeHtml(tipo)}[]" required>
+        <option value="">Selecione o aprovador</option>
+        ${options}
+      </select>
+      <button type="button" class="icon-button" data-remove-flow-row title="Remover aprovador">&times;</button>
+    </div>
+  `;
+}
+
+function renderApprovalFlows() {
+  if (!el.approvalFlowsConfig) return;
+  const { tipos = [], flows = {} } = state.approvalFlows;
+  el.approvalFlowsConfig.innerHTML = tipos.map((tipoInfo) => {
+    const rows = flows[tipoInfo.tipo] || [];
+    return `
+      <section class="approval-flow-card" data-flow="${escapeHtml(tipoInfo.tipo)}">
+        <header>
+          <div>
+            <h3>${escapeHtml(tipoInfo.label)}</h3>
+            <small>Os e-mails seguem exatamente esta sequência.</small>
+          </div>
+          <button type="button" class="small" data-add-flow-row="${escapeHtml(tipoInfo.tipo)}">Adicionar aprovador</button>
+        </header>
+        <div class="approval-flow-rows">
+          ${rows.length ? rows.map((row, index) => approvalFlowSelect(tipoInfo.tipo, index, row.usuario_id)).join("") : approvalFlowSelect(tipoInfo.tipo, 0, "")}
+        </div>
+      </section>
+    `;
+  }).join("") || `<p class="empty-state">Nenhum fluxo disponível.</p>`;
+
+  el.approvalFlowsConfig.querySelectorAll("[data-add-flow-row]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tipo = button.dataset.addFlowRow;
+      state.approvalFlows.flows[tipo] = state.approvalFlows.flows[tipo] || [];
+      state.approvalFlows.flows[tipo].push({ usuario_id: "" });
+      renderApprovalFlows();
+    });
+  });
+  el.approvalFlowsConfig.querySelectorAll("[data-remove-flow-row]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = button.closest("[data-flow]");
+      const tipo = card?.dataset.flow;
+      const row = button.closest(".approval-flow-row");
+      const index = [...card.querySelectorAll(".approval-flow-row")].indexOf(row);
+      const current = state.approvalFlows.flows[tipo] || [];
+      current.splice(index, 1);
+      state.approvalFlows.flows[tipo] = current.length ? current : [{ usuario_id: "" }];
+      renderApprovalFlows();
+    });
+  });
+  el.approvalFlowsConfig.querySelectorAll("select").forEach((select) => {
+    select.addEventListener("change", () => {
+      const card = select.closest("[data-flow]");
+      const tipo = card?.dataset.flow;
+      state.approvalFlows.flows[tipo] = [...card.querySelectorAll("select")].map((item, index) => ({
+        ordem: index + 1,
+        usuario_id: item.value,
+      }));
+    });
+  });
+}
+
+async function loadApprovalFlows() {
+  if (!isAdminUser()) return;
+  state.approvalFlows = await api("/api/config/approval-flows");
+  renderApprovalFlows();
+}
+
+async function saveApprovalFlows(event) {
+  event.preventDefault();
+  const flows = {};
+  el.approvalFlowsConfig.querySelectorAll("[data-flow]").forEach((card) => {
+    flows[card.dataset.flow] = [...card.querySelectorAll("select")]
+      .map((select) => Number(select.value || 0))
+      .filter(Boolean);
+  });
+  showBusy("Salvando fluxos", "Atualizando a sequência de aprovações.");
+  try {
+    await api("/api/config/approval-flows", { method: "PUT", body: JSON.stringify({ flows }) });
+    el.approvalFlowsStatus.textContent = "Fluxos salvos.";
+    toast("Fluxos de aprovação salvos.");
+    await loadApprovalFlows();
+  } finally {
+    hideBusy();
+  }
 }
 
 function renderAdiantamentos() {
@@ -1220,6 +1412,20 @@ function renderAdiantamentos() {
     if (state.adiantamentoFilter === "saldo") return saldoAberto > 0;
     if (state.adiantamentoFilter === "quitados") return saldoAberto <= 0;
     return true;
+  }).map((adiantamento) => {
+    if (adiantamento.status !== "aprovado" || adiantamento.aprovacoes?.approved) return adiantamento;
+    const required = Number(adiantamento.aprovacoes?.required || 2);
+    return {
+      ...adiantamento,
+      aprovacoes: {
+        ...(adiantamento.aprovacoes || {}),
+        approved: true,
+        count: required,
+        required,
+        pendentes: [],
+        proximo: null,
+      },
+    };
   });
 
   el.adiantamentoFilters.forEach((button) => {
@@ -1234,12 +1440,14 @@ function renderAdiantamentos() {
     { label: "Inicio", key: "competencia_inicial" },
     { label: "Status", render: (a) => ({ aberto: "Aberto", em_aprovacao: "Em aprovação", aprovado: "Aprovado", reprovado: "Reprovado" })[a.status || "aberto"] || a.status },
     { label: "Aprovações", render: (a) => renderApprovalMini(a.aprovacoes) },
+    { label: "Omie", render: (a) => renderOmieStatus(a.omie_status) },
     { label: "Saldo aberto", render: (a) => `<span class="money">${sensitiveMoney(a.saldo_aberto)}</span>` },
     { label: "", render: (a) => `
       <div class="row-actions">
         <button class="icon-button" data-extrato="${a.id}" title="Ver extrato">...</button>
         ${hasPermission("manage_adiantamentos") && ["aberto", "reprovado"].includes(a.status || "aberto") ? `<button data-adiantamento-request-approval="${a.id}">Enviar aprovação</button>` : ""}
         ${canApproveFolha() && a.status === "em_aprovacao" && !a.aprovacoes?.approved ? `<button data-adiantamento-approve="${a.id}">Aprovar</button><button data-adiantamento-reject="${a.id}">Reprovar</button>` : ""}
+        ${canIntegrateOmie() && a.status === "aprovado" && a.omie_status !== "integrado" ? `<button data-adiantamento-integrar-omie="${a.id}">Integrar Omie</button>` : ""}
         ${hasPermission("manage_adiantamentos") && ["aberto", "reprovado"].includes(a.status || "aberto") ? `<button class="icon-button danger-button" data-delete-adiantamento="${a.id}" title="Excluir adiantamento">&times;</button>` : ""}
       </div>
     ` },
@@ -1259,6 +1467,9 @@ function renderAdiantamentos() {
   });
   el.adiantamentosTable.querySelectorAll("[data-adiantamento-reject]").forEach((button) => {
     button.addEventListener("click", () => reprovarAdiantamento(button.dataset.adiantamentoReject).catch((error) => toast(error.message)));
+  });
+  el.adiantamentosTable.querySelectorAll("[data-adiantamento-integrar-omie]").forEach((button) => {
+    button.addEventListener("click", () => integrarAdiantamentoOmie(button.dataset.adiantamentoIntegrarOmie).catch((error) => toast(error.message)));
   });
 }
 
@@ -1283,6 +1494,18 @@ async function reprovarAdiantamento(id) {
   await loadAll();
 }
 
+async function integrarAdiantamentoOmie(id) {
+  if (!window.confirm("Integrar este adiantamento ao Omie como transferencia entre contas?")) return;
+  showBusy("Integrando adiantamento", "Criando a transferencia no Omie e atualizando o status.");
+  try {
+    const result = await api(`/api/adiantamentos/${id}/integrar-omie`, { method: "POST", body: "{}" });
+    toast(`Adiantamento integrado ao Omie: ${result.documento || result.codigo_integracao}.`);
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
+}
+
 async function deleteAdiantamento(id) {
   const item = state.adiantamentos.find((adiantamento) => Number(adiantamento.id) === Number(id));
   const nome = item?.razao_social || item?.nome || "este adiantamento";
@@ -1300,6 +1523,22 @@ async function deleteAdiantamento(id) {
 }
 
 function renderRescisoes() {
+  const rows = state.rescisoes.map((rescisao) => {
+    const completed = ["finalizada", "integrada_omie"].includes(rescisao.status);
+    if (!completed || rescisao.aprovacoes?.approved) return rescisao;
+    const required = Number(rescisao.aprovacoes?.required || 2);
+    return {
+      ...rescisao,
+      aprovacoes: {
+        ...(rescisao.aprovacoes || {}),
+        approved: true,
+        count: required,
+        required,
+        pendentes: [],
+        proximo: null,
+      },
+    };
+  });
   renderRows(el.rescisoesTable, [
     { label: "Prestador", render: (r) => `<button type="button" class="link-button row-main-action" data-compose-rescisao="${r.id}"><strong>${r.razao_social}</strong><small>${r.nome}</small></button>` },
     { label: "Data", key: "data_rescisao" },
@@ -1314,7 +1553,7 @@ function renderRescisoes() {
     { label: "Adiantamentos", render: (r) => sensitiveMoney(r.adiantamentos_abertos) },
     { label: "Total a pagar", render: (r) => `<span class="money">${sensitiveMoney(r.valor_total_pagar)}</span>` },
     { label: "", render: (r) => renderRescisaoActions(r) },
-  ], state.rescisoes);
+  ], rows);
 
   el.rescisoesTable.querySelectorAll("[data-compose-rescisao]").forEach((button) => {
     button.addEventListener("click", () => showRescisaoComposition(button.dataset.composeRescisao));
@@ -1713,6 +1952,8 @@ async function loadSmtpConfig() {
   el.smtpForm.elements.graphFrom.value = smtp.graphFrom || "";
   el.smtpForm.elements.graphClientSecret.value = "";
   el.smtpForm.elements.nfDestinationEmail.value = smtp.nfDestinationEmail || "paulo.mendonca@redefrete.com.br";
+  el.smtpForm.elements.nfDeadlineDay.value = smtp.nfDeadlineDay || "3";
+  el.smtpForm.elements.nfFollowupDaysBefore.value = smtp.nfFollowupDaysBefore || "3";
   el.smtpForm.elements.testEmail.value = smtp.nfDestinationEmail || "paulo.mendonca@redefrete.com.br";
   el.smtpStatus.textContent = smtp.graphSecretConfigured ? "Microsoft Graph configurado." : "Microsoft Graph sem secret.";
 }
@@ -1779,6 +2020,7 @@ async function loadOmieConfig() {
   el.omieForm.elements.appSecret.value = "";
   el.omieForm.elements.dueDay.value = omie.dueDay || "5";
   el.omieForm.elements.contaCorrenteId.value = omie.contaCorrenteId || "";
+  el.omieForm.elements.contaAdiantamentoFornecedorId.value = omie.contaAdiantamentoFornecedorId || "";
   el.omieForm.elements.banco.value = omie.banco || "341";
   el.omieForm.elements.agencia.value = omie.agencia || "1268";
   el.omieForm.elements.conta.value = omie.conta || "33981-7";
@@ -1806,9 +2048,15 @@ function applyDateLimits() {
 }
 
 function renderFolhas() {
+  const folhaStatusLabels = {
+    aberta: "Aberto",
+    em_aprovacao: "Em aprovação",
+    reprovada: "Reprovada",
+    fechada: "Fechado",
+  };
   renderRows(el.folhasTable, [
     { label: "Competencia", key: "competencia" },
-    { label: "Status", render: (f) => `<span class="status-pill ${f.status}">${f.status === "aberta" ? "Aberto" : "Fechado"}</span>` },
+    { label: "Status", render: (f) => `<span class="status-pill ${f.status}">${folhaStatusLabels[f.status] || f.status || "-"}</span>` },
     { label: "Prestadores", key: "prestadores" },
     { label: "Valor total a pagar", render: (f) => sensitiveMoney(f.liquido_total, { folhaStatus: f.status }) },
     { label: "Descontos", render: (f) => sensitiveMoney(f.descontos_total, { folhaStatus: f.status }) },
@@ -1867,7 +2115,11 @@ function renderPreview() {
   const locked = state.folhaAtual?.status === "em_aprovacao"
     || (state.folhaAtual?.status === "fechada" && !state.folhaAtual?.temporaryOpen);
   const readOnly = locked || !canManage();
-  const folhaContext = { folhaStatus: state.folhaAtual?.status };
+  const folhaContext = {
+    folhaStatus: state.folhaAtual?.status,
+    approved: state.folhaAtual?.aprovacoes?.approved,
+    requiresApproved: true,
+  };
   const rows = filteredFolhaPreview();
   renderRows(el.folhaPreview, [
     { label: "Prestador", render: (p) => `
@@ -2124,7 +2376,7 @@ function calculatePreview() {
   }
   state.folhaPreview = state.folhaPreview.map((p) => {
     const dias = isDailyPriced(p) ? Number(p.dias_trabalhados || 0) : workedDaysForItem(p, competencia);
-    if (!canSeeSensitiveValues({ folhaStatus: state.folhaAtual?.status })) {
+    if (!canSeeSensitiveValues({ folhaStatus: state.folhaAtual?.status, approved: state.folhaAtual?.aprovacoes?.approved, requiresApproved: true })) {
       return { ...p, dias_trabalhados: dias };
     }
     const salario = Number(p.salario_contrato || p.salario_base || 0);
@@ -2139,14 +2391,19 @@ function calculatePreview() {
       valor_dias: valorDias,
       valor_nf_previsto: previsto,
       liquido_pagar: liquido,
-      diferenca_nf: Number((nfEmitida - liquido).toFixed(2)),
+      diferenca_nf: folhaNfDifference({
+        ...p,
+        valor_nf_emitida: nfEmitida,
+        liquido_pagar: liquido,
+        valor_nf_previsto: previsto,
+      }),
     };
   });
   renderPreview();
 }
 
 function renderTotals() {
-  if (!canSeeSensitiveValues({ folhaStatus: state.folhaAtual?.status })) {
+  if (!canSeeSensitiveValues({ folhaStatus: state.folhaAtual?.status, approved: state.folhaAtual?.aprovacoes?.approved, requiresApproved: true })) {
     el.folhaTotals.innerHTML = `<article><span>Valores</span><strong>Restrito</strong></article>`;
     return;
   }
@@ -2176,7 +2433,7 @@ function renderTotals() {
 
 function renderFolhaLotes() {
   if (!el.folhaLotes) return;
-  const lotes = state.folhaLotes || [];
+  const lotes = (state.folhaLotes || []).filter((lote) => Number(lote.itens || 0) > 0 && Math.abs(Number(lote.total || 0)) > 0.01);
   if (!lotes.length) {
     el.folhaLotes.innerHTML = "";
     return;
@@ -2280,6 +2537,149 @@ function openFolhaReport() {
   window.open(`/folha-relatorio.html?competencia=${encodeURIComponent(competencia)}&key=${encodeURIComponent(reportKey)}`, "_blank");
 }
 
+function resumoChecklistOmie(checklist) {
+  const linhas = [];
+  const resumo = checklist?.resumo || {};
+  linhas.push(`Títulos a integrar: ${checklist?.pendencias?.titulos || 0}`);
+  linhas.push(`Baixas pendentes: ${checklist?.pendencias?.baixas || 0}`);
+  linhas.push(`Anexos pendentes: ${checklist?.pendencias?.anexos || 0}`);
+  if (Number.isFinite(Number(resumo.valor_a_integrar))) linhas.push(`Valor a integrar: ${brl.format(Number(resumo.valor_a_integrar || 0))}`);
+  return linhas.join("\n");
+}
+
+function formatChecklistEntries(entries = [], limite = 12) {
+  const lista = entries.slice(0, limite).map((item) => {
+    const prestador = item.prestador ? ` - ${item.prestador}` : "";
+    return `- ${item.etapa || "Auditoria"}${prestador}: ${item.mensagem}`;
+  });
+  if (entries.length > limite) lista.push(`- ... mais ${entries.length - limite} item(ns).`);
+  return lista.join("\n");
+}
+
+function omieCodigoLocal(tipo, nome, direto) {
+  const codigoDireto = String(direto || "").trim();
+  if (codigoDireto) return codigoDireto;
+  const lista = [...(state[tipo] || []), ...(state.cadastroConfig?.[tipo] || [])];
+  const chave = normalizeText(nome);
+  const encontrado = lista.find((item) => normalizeText(item.nome) === chave);
+  return String(encontrado?.omie_codigo || "").trim();
+}
+
+function codigoOmieValido(codigo) {
+  return /^\d+(?:\.\d+)*$/.test(String(codigo || "").trim());
+}
+
+function auditarFolhaAntesAprovacao(competencia) {
+  const erros = [];
+  const avisos = [];
+  const itens = (state.folhaPreview || []).filter((item) => Number(item.liquido_pagar || item.valor_nf_emitida || item.valor_nf_previsto || 0) > 0);
+
+  if (!itens.length) {
+    erros.push({ etapa: "Folha", mensagem: "Nao ha prestadores com valor para enviar para aprovacao." });
+  }
+
+  itens.forEach((item) => {
+    const prestador = item.razao_social || item.nome || "Prestador";
+    const simoneException = canUseSimoneException(item);
+    const categoriaCodigo = omieCodigoLocal("categorias", item.categoria, item.categoria_omie_codigo);
+    const projetoCodigo = omieCodigoLocal("projetos", item.projeto, item.projeto_omie_codigo);
+    const departamentoCodigo = omieCodigoLocal("departamentos", item.departamento, item.departamento_omie_codigo);
+    const diferenca = Math.abs(Number(item.diferenca_nf ?? folhaNfDifference(item) ?? 0));
+
+    if (!simoneException && onlyDigits(item.cnpj).length !== 14) {
+      erros.push({ etapa: "Prestador", prestador, mensagem: "CNPJ ausente ou invalido." });
+    }
+    if (!codigoOmieValido(categoriaCodigo)) {
+      erros.push({ etapa: "Categoria", prestador, mensagem: "Categoria sem codigo Omie local." });
+    }
+    if (item.projeto && !codigoOmieValido(projetoCodigo)) {
+      erros.push({ etapa: "Projeto", prestador, mensagem: "Projeto sem codigo Omie local." });
+    }
+    if (item.departamento && !codigoOmieValido(departamentoCodigo)) {
+      erros.push({ etapa: "Departamento", prestador, mensagem: "Departamento sem codigo Omie local." });
+    }
+    if (!nfValidatedOrSimoneException(item)) {
+      erros.push({ etapa: "NF", prestador, mensagem: "NF precisa estar validada para entrar no lote de aprovacao." });
+    }
+    if (!simoneException && diferenca > 0.01) {
+      erros.push({ etapa: "NF", prestador, mensagem: `Diferenca de NF: ${brl.format(Number(item.diferenca_nf ?? folhaNfDifference(item) ?? 0))}.` });
+    }
+    if (!simoneException && !String(item.numero_nf || "").trim()) {
+      avisos.push({ etapa: "NF", prestador, mensagem: "Numero da NF nao informado." });
+    }
+  });
+
+  return {
+    erros,
+    avisos,
+    pendencias: { titulos: itens.length, baixas: 0, anexos: 0 },
+    resumo: {
+      valor_a_integrar: itens.reduce((sum, item) => sum + Number(item.valor_nf_emitida || item.valor_nf_previsto || item.liquido_pagar || 0), 0),
+    },
+  };
+}
+
+async function auditarOmieAntesIntegrar(competencia) {
+  const itens = (state.folhaPreview || []).filter((item) => item.omie_status !== "integrado" && Number(item.liquido_pagar || item.valor_nf_emitida || 0) > 0);
+  const erros = [];
+  const avisos = [];
+  const aprovacoes = state.folhaAtual?.aprovacoes || {};
+  if (!aprovacoes.approved) {
+    erros.push({
+      etapa: "Aprovações",
+      mensagem: `Fluxo ainda nao aprovado: ${aprovacoes.count || 0}/${aprovacoes.required || 0}.`,
+    });
+  }
+  if (!itens.length) {
+    avisos.push({ etapa: "Pendências", mensagem: "Nao ha prestadores pendentes para integrar." });
+  }
+  itens.forEach((item) => {
+    const prestador = item.razao_social || item.nome || "Prestador";
+    const simoneException = canUseSimoneException(item);
+    const cnpj = onlyDigits(item.cnpj);
+    if (!simoneException && (!cnpj || cnpj.length !== 14)) erros.push({ etapa: "Prestador", prestador, mensagem: "CNPJ ausente ou invalido." });
+    if (!simoneException && !Number(item.omie_codigo_cliente || 0)) avisos.push({ etapa: "Prestador", prestador, mensagem: "Sem codigo de fornecedor Omie no cadastro local. O sistema tentara consultar/cadastrar antes do envio." });
+    if (!codigoOmieValido(omieCodigoLocal("categorias", item.categoria, item.categoria_omie_codigo))) {
+      erros.push({ etapa: "Categoria", prestador, mensagem: "Categoria sem codigo Omie local." });
+    }
+    if (!nfValidatedOrSimoneException(item)) erros.push({ etapa: "NF", prestador, mensagem: "NF precisa estar validada antes de integrar." });
+    if (!simoneException && !String(item.numero_nf || "").trim()) erros.push({ etapa: "NF", prestador, mensagem: "Numero da NF nao informado." });
+    if (!simoneException && Number(item.valor_nf_emitida || 0) <= 0) erros.push({ etapa: "NF", prestador, mensagem: "Valor da NF nao informado." });
+  });
+  const checklist = {
+    erros,
+    avisos,
+    pendencias: { titulos: itens.length, baixas: 0, anexos: 0 },
+    resumo: {
+      valor_a_integrar: itens.reduce((sum, item) => sum + Number(item.valor_nf_emitida || item.valor_nf_previsto || item.liquido_pagar || 0), 0),
+    },
+  };
+  if (checklist?.erros?.length) {
+    window.alert([
+      "A integração Omie foi bloqueada pelo checklist.",
+      "",
+      resumoChecklistOmie(checklist),
+      "",
+      "Pendências:",
+      formatChecklistEntries(checklist.erros),
+    ].join("\n"));
+    return false;
+  }
+  if (checklist?.avisos?.length) {
+    return window.confirm([
+      "Checklist Omie aprovado, mas existem avisos.",
+      "",
+      resumoChecklistOmie(checklist),
+      "",
+      "Avisos:",
+      formatChecklistEntries(checklist.avisos, 8),
+      "",
+      "Deseja continuar mesmo assim?",
+    ].join("\n"));
+  }
+  return true;
+}
+
 async function integrarOmie() {
   const competencia = el.folhaForm.elements.competencia.value;
   if (!competencia || !state.folhaAtual) {
@@ -2291,28 +2691,95 @@ async function integrarOmie() {
     toast("A Omie recebe somente folhas ou lotes fechados.");
     return;
   }
+  try {
+    await loadFolha(competencia);
+    const podeIntegrar = await auditarOmieAntesIntegrar(competencia);
+    if (!podeIntegrar) return;
+  } catch (error) {
+    toast(error.message || "Nao foi possivel auditar a integracao Omie.");
+    return;
+  }
   el.integrarOmie.disabled = true;
   el.integrarOmie.textContent = "Integrando...";
-  showBusy("Integrando folha", `Enviando lançamentos da competência ${competencia} para a Omie.`);
+  const pausaEntreLotesMs = 15000;
+  let totalInicial = state.folhaPreview.filter((item) => item.omie_status !== "integrado").length || 1;
+  let totalIntegrados = 0;
+  let totalFalhas = 0;
+  let rodada = 1;
+  let restantes = totalInicial;
+  showBusy(
+    "Integrando folha",
+    `Processando um prestador por vez, com pausas entre chamadas da Omie.`,
+    { determinate: true, progress: 5, progressLabel: "Preparando lote" },
+  );
   try {
-    const result = await api(`/api/folhas/${competencia}/integrar-omie`, { method: "POST", body: "{}" });
-    const falhas = result.erros?.length || 0;
-    toast(falhas ? `Omie integrada com ${falhas} erro(s).` : `Omie integrada: ${result.integrados.length} lancamento(s).`);
-    await loadFolha(competencia);
+    do {
+      const concluidoAntes = Math.max(0, totalInicial - restantes);
+      let waitingProgress = Math.max(5, Math.min(95, Math.round((concluidoAntes / totalInicial) * 100)));
+      setBusyProgress(
+        waitingProgress,
+        `Prestador ${rodada}`,
+      );
+      if (el.busyMessage) {
+        el.busyMessage.textContent = `Processando um prestador completo. Restam ${restantes} operação(ões) na Omie.`;
+      }
+      let result;
+      window.clearInterval(busyProgressTimer);
+      busyProgressTimer = window.setInterval(() => {
+        waitingProgress = Math.min(92, waitingProgress + 1);
+        setBusyProgress(waitingProgress, `Prestador ${rodada}`);
+      }, 2500);
+      try {
+        result = await api(`/api/folhas/${competencia}/integrar-omie`, { method: "POST", body: "{}", busy: false });
+      } catch (error) {
+        if (!(await confirmOmiePrestadorCadastro(error))) throw error;
+        result = await api(`/api/folhas/${competencia}/integrar-omie`, {
+          method: "POST",
+          body: JSON.stringify({ cadastrar_prestadores_omie: true }),
+          busy: false,
+        });
+      } finally {
+        window.clearInterval(busyProgressTimer);
+        busyProgressTimer = null;
+      }
+      if (!Number.isFinite(Number(result.total_pendentes_inicio)) || Number(result.total_pendentes_inicio) <= 0) {
+        totalInicial = Math.max(totalInicial, Number(result.integrados?.length || 0) + Number(result.restantes || 0), 1);
+      } else if (rodada === 1) {
+        totalInicial = Number(result.total_pendentes_inicio || totalInicial) || totalInicial;
+      }
+      totalIntegrados += Number(result.integrados?.length || 0);
+      totalIntegrados += Number(result.baixasAtualizadas?.length || 0);
+      totalIntegrados += Number(result.anexosAtualizados?.length || 0);
+      totalFalhas += Number(result.erros?.length || 0);
+      restantes = Number(result.restantes || 0);
+      const concluidoAgora = Math.max(0, totalInicial - restantes);
+      setBusyProgress(
+        restantes ? Math.min(96, Math.round((concluidoAgora / totalInicial) * 100)) : 100,
+        restantes ? `Pausa entre lotes` : "Concluído",
+      );
+      if (result.erros?.length || result.bloqueioOmie || result.erroEstrutural) break;
+      if (restantes > 0) {
+        if (el.busyMessage) {
+          el.busyMessage.textContent = `Prestador concluído. Aguardando ${Math.round(pausaEntreLotesMs / 1000)}s antes do próximo.`;
+        }
+        await delay(pausaEntreLotesMs);
+      }
+      rodada += 1;
+    } while (restantes > 0);
+    toast(totalFalhas
+      ? `Omie processou ${totalIntegrados} lançamento(s), com ${totalFalhas} erro(s).`
+      : restantes
+        ? `Omie processou ${totalIntegrados} lançamento(s). Restam ${restantes}.`
+        : `Omie integrada: ${totalIntegrados} lançamento(s).`);
   } catch (error) {
-    if (await confirmOmiePrestadorCadastro(error)) {
-      const result = await api(`/api/folhas/${competencia}/integrar-omie`, {
-        method: "POST",
-        body: JSON.stringify({ cadastrar_prestadores_omie: true }),
-      });
-      const falhas = result.erros?.length || 0;
-      toast(falhas ? `Omie integrada com ${falhas} erro(s).` : `Omie integrada: ${result.integrados.length} lancamento(s).`);
-      await loadFolha(competencia);
-      return;
+    const retrySeconds = Number(error.bloqueioOmie?.retrySeconds || error.retrySeconds || 0);
+    if (retrySeconds > 0) {
+      toast(`Omie pediu pausa de ${retrySeconds}s. Aguarde e tente novamente.`);
+    } else {
+      toast(error.message);
     }
-    toast(error.message);
-    await loadFolha(competencia);
   } finally {
+    await loadFolha(competencia);
     hideBusy();
     el.integrarOmie.disabled = false;
     el.integrarOmie.textContent = "Integrar Omie";
@@ -2375,6 +2842,33 @@ async function enviarFolhaAprovacao() {
     toast("Abra uma folha antes de enviar para aprovação.");
     return;
   }
+  try {
+    await saveFolhaDraftNow();
+    await loadFolha(competencia);
+    const checklist = auditarFolhaAntesAprovacao(competencia);
+    if (checklist.erros.length) {
+      window.alert([
+        "A folha ainda nao pode ser enviada para aprovacao.",
+        "",
+        "Pendências:",
+        formatChecklistEntries(checklist.erros, 15),
+      ].join("\n"));
+      return;
+    }
+    if (checklist.avisos.length && !window.confirm([
+      "A folha pode ser enviada para aprovacao, mas existem avisos.",
+      "",
+      "Avisos:",
+      formatChecklistEntries(checklist.avisos, 10),
+      "",
+      "Deseja continuar mesmo assim?",
+    ].join("\n"))) {
+      return;
+    }
+  } catch (error) {
+    toast(error.message || "Nao foi possivel auditar a folha antes da aprovacao.");
+    return;
+  }
   const aptos = state.folhaPreview.filter((item) => nfValidatedOrSimoneException(item) && Math.abs(Number(item.diferenca_nf || 0)) <= 0.01 && Number(item.liquido_pagar || 0) > 0).length;
   const fora = state.folhaPreview.length - aptos;
   if (!window.confirm(`Enviar a competência ${competencia} para aprovação?\n\nSerá criado um lote com ${aptos} prestador(es) apto(s). ${fora} ficarão fora deste lote por pendências ou divergências.`)) return;
@@ -2382,13 +2876,13 @@ async function enviarFolhaAprovacao() {
   el.enviarAprovacaoFolha.textContent = "Enviando...";
   showBusy("Enviando aprovação", "Enviando a folha para o fluxo de aprovação.");
   try {
-    await saveFolhaDraftNow();
     const result = await api(`/api/folhas/${competencia}/enviar-aprovacao`, {
       method: "POST",
       body: JSON.stringify({ itens: state.folhaPreview }),
     });
     const enviados = result.enviados?.length || 0;
     const falhas = result.falhas?.length || 0;
+    await loadFolha(competencia);
     toast(`Enviado para aprovação: ${enviados} e-mail(s), ${falhas} falha(s).`);
   } finally {
     hideBusy();
@@ -2446,7 +2940,7 @@ async function uploadNf(input) {
   const competencia = el.folhaForm.elements.competencia.value;
   const form = new FormData();
   form.append("nf", input.files[0]);
-  form.append("valor_esperado", item.liquido_pagar || 0);
+  form.append("valor_esperado", expectedFolhaNfValue(item) || 0);
   showBusy("Enviando NF", "Anexando e validando a nota fiscal.");
   try {
     const response = await fetch(`/api/folhas/${competencia}/prestadores/${prestadorId}/nf`, {
@@ -2642,22 +3136,104 @@ function updatePrestadorPricingFields() {
   valorDiaField.closest("label").classList.toggle("muted-field", tipo !== "diaria");
 }
 
+function renderFinanceiroActions(item) {
+  const buttons = [];
+  if (item.open_url) {
+    buttons.push(`<button type="button" data-finance-open="${escapeHtml(item.open_url)}">Abrir</button>`);
+  }
+  if (item.report_url) {
+    buttons.push(`<button type="button" data-finance-open="${escapeHtml(item.report_url)}">Relatório</button>`);
+  }
+  if (item.integrate_url && canIntegrateOmie()) {
+    buttons.push(`<button type="button" class="primary" data-finance-integrate="${escapeHtml(item.key)}">Integrar Omie</button>`);
+  }
+  return `<div class="row-actions">${buttons.join("")}</div>`;
+}
+
+function renderFinanceiro() {
+  if (!el.financeiroTable) return;
+  const filter = state.financeFilter || "todos";
+  const rows = (state.financeiroFila || []).filter((item) => {
+    if (filter === "todos") return true;
+    if (filter === "erro") return item.status_kind === "error";
+    return item.tipo === filter;
+  });
+  const valor = rows.reduce((sum, item) => sum + Number(item.valor || 0), 0);
+  if (el.financeFilter) el.financeFilter.value = filter;
+  el.financeMetricTotal.textContent = rows.length;
+  el.financeMetricOmie.textContent = rows.filter((item) => item.integrate_url).length;
+  el.financeMetricValor.textContent = canSeeSensitiveValues({ folhaStatus: "fechada" }) ? money(valor) : "Restrito";
+
+  renderRows(el.financeiroTable, [
+    { label: "Tipo", render: (item) => `<span class="status-pill ${item.status_kind || "warn"}">${escapeHtml(item.tipo_label || item.tipo)}</span>` },
+    { label: "Processo", render: (item) => `<strong>${escapeHtml(item.numero || item.titulo || "")}</strong><br><small>${escapeHtml(item.descricao || "")}</small>` },
+    { label: "Competência/Data", render: (item) => `${escapeHtml(item.competencia || "-")}${item.data ? `<br><small>${escapeHtml(item.data)}</small>` : ""}` },
+    { label: "Valor", render: (item) => `<span class="money">${canSeeSensitiveValues({ folhaStatus: "fechada" }) ? money(item.valor) : "Restrito"}</span>` },
+    { label: "Status", render: (item) => `<span class="status-pill ${item.status_kind || "warn"}">${escapeHtml(item.status_label || item.status || "")}</span>${item.erro ? `<br><small class="danger-text">${escapeHtml(item.erro)}</small>` : ""}` },
+    { label: "Próxima ação", render: (item) => escapeHtml(item.acao_label || "") },
+    { label: "", render: renderFinanceiroActions },
+  ], rows, "Nenhuma pendência financeira.");
+
+  el.financeiroTable.querySelectorAll("[data-finance-open]").forEach((button) => {
+    button.addEventListener("click", () => openFinanceiroTarget(button.dataset.financeOpen));
+  });
+  el.financeiroTable.querySelectorAll("[data-finance-integrate]").forEach((button) => {
+    button.addEventListener("click", () => integrarFinanceiroItem(button.dataset.financeIntegrate).catch((error) => toast(error.message)));
+  });
+}
+
+function openFinanceiroTarget(target) {
+  if (!target) return;
+  if (target.startsWith("/#folha:")) {
+    openFolha(decodeURIComponent(target.slice("/#folha:".length)));
+    return;
+  }
+  if (target === "/#adiantamentos") {
+    setView("adiantamentos");
+    return;
+  }
+  if (target === "/#rescisoes") {
+    setView("rescisoes");
+    return;
+  }
+  window.open(target, "_blank");
+}
+
+async function integrarFinanceiroItem(key) {
+  const item = (state.financeiroFila || []).find((row) => row.key === key);
+  if (!item?.integrate_url) return;
+  if (!window.confirm(`Integrar ${item.numero || item.titulo} ao Omie agora?`)) return;
+  showBusy("Integrando Omie", "Enviando o item selecionado e atualizando a fila financeira.");
+  try {
+    await api(item.integrate_url, {
+      method: "POST",
+      body: JSON.stringify(item.integrate_body || {}),
+    });
+    toast("Integração enviada ao Omie.");
+    await loadAll();
+  } finally {
+    hideBusy();
+  }
+}
+
 async function loadAll() {
   const adiantamentoAccess = hasPermission("manage_adiantamentos");
   const rescisaoAccess = canViewRescisoes();
   const operationalAccess = adiantamentoAccess || rescisaoAccess;
   const folhaAccess = canViewFolhas();
   const prestadorAccess = canViewPrestadores();
-  const [health, appConfig, resumo, prestadores, cadastros, adiantamentos, rescisoes, folhas, comparativo] = await Promise.all([
+  const financeiroAccess = canViewFinanceiro();
+  const [health, appConfig, resumo, prestadores, cadastros, adiantamentos, rescisoes, folhas, comparativo, financeiro] = await Promise.all([
     api("/api/health").catch(() => ({ ok: false })),
     api("/api/config/app"),
     folhaAccess ? api("/api/resumo") : Promise.resolve({ prestadoresAtivos: 0, adiantamentosEmAberto: null, ultimaFolha: null }),
     prestadorAccess ? api("/api/prestadores") : Promise.resolve({ prestadores: [] }),
-    prestadorAccess || operationalAccess ? api("/api/cadastros") : Promise.resolve({ clientes: [], unidades: [], funcoes: [], categorias: [], departamentos: [], projetos: [] }),
+    prestadorAccess || operationalAccess || folhaAccess || financeiroAccess ? api("/api/cadastros") : Promise.resolve({ clientes: [], unidades: [], funcoes: [], categorias: [], departamentos: [], projetos: [] }),
     adiantamentoAccess ? api("/api/adiantamentos") : Promise.resolve({ adiantamentos: [] }),
     rescisaoAccess ? api("/api/rescisoes") : Promise.resolve({ rescisoes: [] }),
     folhaAccess ? api("/api/folhas") : Promise.resolve({ folhas: [] }),
     folhaAccess ? api("/api/departamentos/comparativo") : Promise.resolve({ comparativo: [] }),
+    financeiroAccess ? api("/api/financeiro/fila") : Promise.resolve({ itens: [], resumo: {} }),
   ]);
 
   el.status.textContent = health.ok ? "Conectado" : "Sem conexao";
@@ -2675,6 +3251,12 @@ async function loadAll() {
   state.rescisoes = rescisoes.rescisoes;
   state.folhas = folhas.folhas;
   state.comparativo = comparativo.comparativo;
+  state.financeiroFila = financeiro.itens || [];
+  state.financeiroResumo = financeiro.resumo || { total: 0, a_integrar: 0, valor: 0 };
+  if (folhaAccess && (!el.folhaForm.elements.competencia.value || el.folhaForm.elements.competencia.value === currentCompetencia())) {
+    el.folhaForm.elements.competencia.value = defaultFolhaCompetencia();
+    el.diasMesAuto.textContent = daysInCompetencia(el.folhaForm.elements.competencia.value);
+  }
 
   el.metrics.prestadores.textContent = resumo.prestadoresAtivos;
   el.metrics.adiantamentos.textContent = canSeeSensitiveValues() ? money(resumo.adiantamentosEmAberto) : "Restrito";
@@ -2694,11 +3276,15 @@ async function loadAll() {
     renderFolhas();
     renderComparativo();
   }
+  if (financeiroAccess) {
+    renderFinanceiro();
+  }
   applyAuthUi();
   if (document.querySelector("#folha").classList.contains("active") && folhaAccess) await loadFolha();
   if (document.querySelector("#configuracoes").classList.contains("active")) {
     if (hasPermission("manage_cadastros")) await loadCadastrosConfig();
     if (hasPermission("manage_users")) await loadUsuarios();
+    if (hasPermission("manage_users")) await loadApprovalFlows();
     if (hasPermission("manage_smtp")) await loadSmtpConfig();
     if (hasPermission("manage_smtp")) await loadEmailTemplates();
     if (hasPermission("manage_omie_config")) await loadOmieConfig();
@@ -2785,6 +3371,7 @@ document.querySelector(".settings-button").addEventListener("click", () => {
   if (hasPermission("manage_omie_config")) loadOmieConfig().catch((error) => toast(error.message));
   if (hasPermission("manage_cadastros")) loadCadastrosConfig().catch((error) => toast(error.message));
   if (hasPermission("manage_users")) loadUsuarios().catch((error) => toast(error.message));
+  if (hasPermission("manage_users")) loadApprovalFlows().catch((error) => toast(error.message));
 });
 
 el.refresh.addEventListener("click", async () => {
@@ -2799,7 +3386,7 @@ el.refresh.addEventListener("click", async () => {
       if (summary.reprocessed) parts.push(`${summary.reprocessed} NF(s) relida(s)`);
       if (summary.errors) {
         const firstError = summary.errorItems?.[0];
-        parts.push(`${summary.errors} erro(s) na leitura${firstError?.file ? `: ${firstError.file}` : ""}`);
+        parts.push(`${summary.errors} erro(s) na leitura${firstError?.reason ? `: ${firstError.reason}` : ""}`);
       }
       toast(`${parts.join(". ")}.`);
     } else {
@@ -2893,6 +3480,10 @@ el.adiantamentoFilters.forEach((button) => {
     state.adiantamentoFilter = button.dataset.adiantamentoFilter;
     renderAdiantamentos();
   });
+});
+el.financeFilter?.addEventListener("change", () => {
+  state.financeFilter = el.financeFilter.value;
+  renderFinanceiro();
 });
 el.adiantamentoForm.elements.data_adiantamento.addEventListener("change", () => {
   syncAdiantamentoCompetenciaFromDate(true);
@@ -2996,6 +3587,10 @@ el.usuarioForm.addEventListener("submit", async (event) => {
     hideBusy();
   }
 });
+
+if (el.approvalFlowsForm) {
+  el.approvalFlowsForm.addEventListener("submit", saveApprovalFlows);
+}
 
 el.prestadorForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -3144,7 +3739,7 @@ async function applyInitialRoute() {
   const view = params.get("view");
   if (view === "folha" && canViewFolhas()) {
     setView("folha");
-    const competencia = params.get("competencia") || currentCompetencia();
+    const competencia = params.get("competencia") || defaultFolhaCompetencia();
     el.folhaForm.elements.competencia.value = competencia;
     await loadFolha(competencia);
     return;

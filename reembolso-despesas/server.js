@@ -98,6 +98,7 @@ function authCode(prefix) {
 }
 
 const pendingComprovantes = new Map();
+const pendingDespesaCreates = new Map();
 
 function cleanupPendingComprovantes(maxAgeMs = 60 * 60 * 1000) {
   const now = Date.now();
@@ -105,6 +106,9 @@ function cleanupPendingComprovantes(maxAgeMs = 60 * 60 * 1000) {
     if (now - Number(item.created_at || 0) <= maxAgeMs) continue;
     if (item.filename) fs.rm(path.join(uploadDir, item.filename), { force: true }, () => {});
     pendingComprovantes.delete(token);
+  }
+  for (const [token, item] of pendingDespesaCreates.entries()) {
+    if (now - Number(item.created_at || 0) > maxAgeMs) pendingDespesaCreates.delete(token);
   }
 }
 
@@ -119,9 +123,6 @@ const PRESTACAO_OMIE_SYNC_STATUSES = new Set(["a_pagar", "a_devolver", "pago", "
 const PRESTACAO_ABERTA_STATUSES = new Set([
   "rascunho",
   "enviada_superior",
-  "em_validacao_financeira",
-  "a_pagar",
-  "a_devolver",
   "reprovada_superior",
   "reprovada_financeiro"
 ]);
@@ -723,6 +724,7 @@ async function validarDocumentoDespesa({ prestacao, file }) {
   const qrUrl = fiscal.qr_url || extractFiscalQrUrl(qrText);
   const consulta = qrUrl ? await consultarDocumentoFiscal(qrUrl) : { skipped: true };
   const chave = fiscal.chave_acesso || extractAccessKeyFromQrText(qrText);
+  const cnpjEmitente = onlyDigits(fiscal.cnpj_emitente || "");
   const numero = fiscal.numero_nf || "";
   const data = consulta.data_emissao || null;
   const valor = consulta.valor || null;
@@ -742,6 +744,20 @@ async function validarDocumentoDespesa({ prestacao, file }) {
     duplicada = rows[0] || null;
     if (duplicada) divergencias.push(`NF ja anexada na prestacao ${duplicada.prestacao_numero}.`);
   }
+  if (!duplicada && cnpjEmitente && numero) {
+    const rows = await query(
+      `SELECT c.id, d.prestacao_id, p.numero AS prestacao_numero
+         FROM rd_reembolso_comprovantes c
+         JOIN rd_reembolso_despesas d ON d.id = c.despesa_id
+         JOIN rd_reembolso_prestacoes p ON p.id = d.prestacao_id
+        WHERE c.nf_cnpj_emitente = ?
+          AND TRIM(LEADING '0' FROM COALESCE(c.nf_numero, '')) = TRIM(LEADING '0' FROM ?)
+        LIMIT 1`,
+      [cnpjEmitente, String(numero)]
+    );
+    duplicada = rows[0] || null;
+    if (duplicada) divergencias.push(`NF do mesmo CNPJ e numero ja anexada na prestacao ${duplicada.prestacao_numero}.`);
+  }
   if (data && (data < String(prestacao.data_inicio).slice(0, 10) || data > String(prestacao.data_fim).slice(0, 10))) {
     divergencias.push(`Data da NF (${formatDate(data)}) fora do periodo da prestacao (${formatDate(prestacao.data_inicio)} a ${formatDate(prestacao.data_fim)}).`);
   }
@@ -756,6 +772,7 @@ async function validarDocumentoDespesa({ prestacao, file }) {
     is_nf: isNf,
     status: isNf && !divergencias.length && data && valor ? "validada" : "manual",
     chave_acesso: chave || null,
+    cnpj_emitente: cnpjEmitente || null,
     numero_nf: numero || null,
     data_emissao: data,
     valor,
@@ -1366,6 +1383,40 @@ function documentoDivergenciasComDespesa(validacao = {}, despesa = {}) {
   return divergencias;
 }
 
+async function despesasDuplicidadeSuspeita({ prestacaoId, solicitanteId, dataDespesa, valor, excludeDespesaId = null }) {
+  const data = dateOnly(dataDespesa);
+  const amount = toMoney(valor);
+  if (!solicitanteId || !data || amount <= 0) return [];
+  return query(
+    `SELECT d.id, d.descricao, d.valor, d.data_despesa, p.numero AS prestacao_numero, p.status
+       FROM rd_reembolso_despesas d
+       JOIN rd_reembolso_prestacoes p ON p.id = d.prestacao_id
+      WHERE p.solicitante_id = ?
+        AND d.data_despesa = ?
+        AND ABS(d.valor - ?) <= 0.02
+        AND d.id <> COALESCE(?, 0)
+        AND p.status NOT IN ('cancelada', 'excluida')
+      ORDER BY d.created_at DESC
+      LIMIT 5`,
+    [solicitanteId, data, amount, excludeDespesaId]
+  );
+}
+
+function duplicidadeSuspeitaError(matches = []) {
+  const first = matches[0] || {};
+  const details = matches
+    .map((item) => `${item.prestacao_numero || "prestacao"} - ${formatDate(item.data_despesa)} - ${formatMoney(item.valor)} - ${item.descricao || "sem descricao"}`)
+    .join(" | ");
+  const error = new Error(
+    `Possivel duplicidade: ja existe despesa com a mesma data e valor${first.prestacao_numero ? ` na ${first.prestacao_numero}` : ""}. Confirme se deseja continuar.`
+  );
+  error.statusCode = 409;
+  error.code = "duplicidade_suspeita";
+  error.matches = matches;
+  error.details = details;
+  return error;
+}
+
 function startOfWeekMonday(date) {
   const result = new Date(date);
   const day = result.getUTCDay() || 7;
@@ -1675,6 +1726,60 @@ async function sendGraphMail({ to, subject, html }) {
     throw new Error(detail?.error?.message || `Microsoft Graph retornou HTTP ${response.status}.`);
   }
   return { sent: true, to: recipients };
+}
+
+function isFinanceActionUser(user) {
+  if (!user?.ativo) return false;
+  if (user.perfil === "financeiro") return true;
+  if (["master", "administrador"].includes(user.perfil)) return false;
+  return hasPermission(user, "reembolso_financeiro") || hasPermission(user, "reembolso_integrar_omie");
+}
+
+async function getFinanceActionUsers() {
+  const users = await query(
+    "SELECT id, nome, email, perfil, permissoes_json, ativo FROM usuarios WHERE ativo = 1 AND email IS NOT NULL AND email <> '' ORDER BY nome"
+  );
+  const seen = new Set();
+  return users.filter((user) => {
+    const email = String(user.email || "").trim().toLowerCase();
+    if (!email || seen.has(email) || !isFinanceActionUser(user)) return false;
+    seen.add(email);
+    return true;
+  });
+}
+
+async function sendFinanceActionEmail({ titulo, detalhe, link }) {
+  if (!emailConfigured()) return { sent: false, reason: "E-mail nao configurado.", enviados: [], falhas: [] };
+  const users = await getFinanceActionUsers();
+  const enviados = [];
+  const falhas = [];
+  const safeLink = publicUrl(link || reembolsoPublicBaseUrl());
+  for (const user of users) {
+    const email = String(user.email || "").trim();
+    try {
+      await sendGraphMail({
+        to: email,
+        subject: `Acao financeira pendente - ${titulo}`,
+        html: `
+          <p>Ola, ${escapeHtml(user.nome || "Financeiro")}.</p>
+          <p><strong>${escapeHtml(titulo)}</strong> foi aprovado e esta aguardando uma acao do financeiro.</p>
+          <div style="margin:16px 0;padding:14px;border:1px solid #d7dde6;border-radius:6px;background:#f8fafc">
+            <strong style="display:block;margin-bottom:10px;color:#0b1726">Resumo</strong>
+            <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">
+              <tr><td style="width:120px;padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Processo</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(titulo)}</td></tr>
+              <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Detalhe</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(detalhe || "")}</td></tr>
+              <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Link</td><td style="padding:7px;border-top:1px solid #e5e7eb;color:#0b1726">${escapeHtml(safeLink)}</td></tr>
+            </table>
+          </div>
+          <p><a href="${escapeHtml(safeLink)}" style="display:inline-block;background:#002b5f;color:#fff;text-decoration:none;padding:10px 14px;border-radius:4px;font-weight:700">Abrir sistema</a></p>
+        `
+      });
+      enviados.push({ id: user.id, nome: user.nome, email });
+    } catch (error) {
+      falhas.push({ id: user.id, nome: user.nome, email, erro: error.message });
+    }
+  }
+  return { sent: enviados.length > 0, enviados, falhas, total: users.length };
 }
 
 async function sendReembolsoApprovalEmails({ titulo, detalhe, link, emails, prestacaoId }) {
@@ -2020,6 +2125,7 @@ async function ensureSchema() {
   await addColumnIfMissing("rd_reembolso_prestacoes", "ajuste_financeiro_em", "ajuste_financeiro_em DATETIME NULL AFTER ajuste_financeiro_justificativa");
   await addColumnIfMissing("rd_reembolso_prestacoes", "ajuste_financeiro_por", "ajuste_financeiro_por BIGINT NULL AFTER ajuste_financeiro_em");
   await addColumnIfMissing("rd_reembolso_comprovantes", "nf_chave_acesso", "nf_chave_acesso VARCHAR(60) NULL AFTER tamanho_bytes");
+  await addColumnIfMissing("rd_reembolso_comprovantes", "nf_cnpj_emitente", "nf_cnpj_emitente VARCHAR(20) NULL AFTER nf_chave_acesso");
   await addColumnIfMissing("rd_reembolso_comprovantes", "nf_numero", "nf_numero VARCHAR(30) NULL AFTER nf_chave_acesso");
   await addColumnIfMissing("rd_reembolso_comprovantes", "nf_data_emissao", "nf_data_emissao DATE NULL AFTER nf_numero");
   await addColumnIfMissing("rd_reembolso_comprovantes", "nf_valor", "nf_valor DECIMAL(15,2) NULL AFTER nf_data_emissao");
@@ -2474,16 +2580,26 @@ async function aprovarPrestacaoReembolso(prestacaoId, user, justificativa = null
   );
   const nextStep = await nextReembolsoApprovalStep(prestacaoId);
   let dataPagamento = null;
+  let emailFinanceiro = null;
+  let emailProximoAprovador = null;
   if (nextStep) {
     await execute("UPDATE rd_reembolso_prestacoes SET updated_at = ? WHERE id = ?", [aprovadoEm, prestacaoId]);
     const detalhe = await reembolsoPrestacaoEmailResumo(prestacaoId, "Uma prestacao de contas de reembolso avancou para sua etapa de aprovacao.");
-    await sendReembolsoApprovalEmailsTo({
-      titulo: `Prestação ${prestacao.numero || prestacaoId} aguardando aprovação`,
-      detalhe,
-      link: `${approvalCentralUrl()}?tipo=reembolso_superior&id=${encodeURIComponent(prestacaoId)}`,
-      emails: [nextStep.email],
-      prestacaoId
-    });
+    try {
+      emailProximoAprovador = await sendReembolsoApprovalEmailsTo({
+        titulo: `Prestação ${prestacao.numero || prestacaoId} aguardando aprovação`,
+        detalhe,
+        link: `${approvalCentralUrl()}?tipo=reembolso_superior&id=${encodeURIComponent(prestacaoId)}`,
+        emails: [nextStep.email],
+        prestacaoId
+      });
+      if (emailProximoAprovador?.falhas?.length) {
+        await addHistory(prestacaoId, user.id, "falha_email_aprovacao", `Falha ao enviar e-mail para ${nextStep.nome}: ${JSON.stringify(emailProximoAprovador.falhas)}`);
+      }
+    } catch (emailError) {
+      emailProximoAprovador = { sent: false, reason: emailError.message || "Falha ao enviar e-mail.", enviados: [], falhas: [{ nome: nextStep.nome, email: nextStep.email, erro: emailError.message || "Falha ao enviar e-mail." }] };
+      await addHistory(prestacaoId, user.id, "falha_email_aprovacao", `Falha ao enviar e-mail para ${nextStep.nome}: ${emailError.message || "Falha ao enviar e-mail."}`);
+    }
   } else {
     try {
       dataPagamento = calcularDataPagamentoReembolso(prestacao.created_at, aprovadoEm) || fallbackDataPagamentoReembolso();
@@ -2494,9 +2610,21 @@ async function aprovarPrestacaoReembolso(prestacaoId, user, justificativa = null
       "UPDATE rd_reembolso_prestacoes SET status = 'em_validacao_financeira', aprovado_superior_em = ?, data_pagamento_prevista = ?, updated_at = ? WHERE id = ?",
       [aprovadoEm, dataPagamento, aprovadoEm, prestacaoId]
     );
+    const detalhe = await reembolsoPrestacaoEmailResumo(
+      prestacaoId,
+      `Prestacao ${prestacao.numero || prestacaoId} aprovada pelos aprovadores e aguardando validacao financeira.`
+    );
+    emailFinanceiro = await sendFinanceActionEmail({
+      titulo: `Prestacao ${prestacao.numero || prestacaoId} aprovada`,
+      detalhe,
+      link: `${reembolsoPublicBaseUrl()}/?prestacao=${encodeURIComponent(prestacaoId)}`
+    });
+    if (emailFinanceiro?.falhas?.length) {
+      await addHistory(prestacaoId, user.id, "falha_email_financeiro", `Falha ao avisar financeiro: ${JSON.stringify(emailFinanceiro.falhas)}`);
+    }
   }
   await addHistory(prestacaoId, user.id, "aprovou_superior", `${expectedStep.nome} aprovou a prestacao.`);
-  return { ok: true, autenticacao: codigo, data_pagamento_prevista: dataPagamento, proxima_etapa: nextStep?.nome || "Financeiro" };
+  return { ok: true, autenticacao: codigo, data_pagamento_prevista: dataPagamento, proxima_etapa: nextStep?.nome || "Financeiro", emailProximoAprovador, emailFinanceiro };
 }
 
 async function reprovarPrestacaoReembolso(prestacaoId, user, justificativa = null) {
@@ -2907,7 +3035,7 @@ function asyncRoute(handler) {
 
 app.get("/api/health", asyncRoute(async (_req, res) => {
   await query("SELECT 1 AS ok");
-  res.json({ ok: true, app: "reembolso-despesas" });
+  res.json({ ok: true, app: "reembolso-despesas", build: "expense-upload-fast-20260603" });
 }));
 
 app.post("/api/auth/verificar-acesso", asyncRoute(async (req, res) => {
@@ -3395,7 +3523,16 @@ app.post("/api/adiantamentos/:id/aprovar", requireReembolsoPermission("reembolso
     descricao: `Adiantamento aprovado ${adiantamento.numero}`,
     omieStatus: "pendente"
   });
-  res.json({ ok: true });
+  const detalhe = await reembolsoAdiantamentoEmailResumo(
+    adiantamento.id,
+    `Adiantamento ${adiantamento.numero} aprovado e aguardando acao financeira.`
+  );
+  const emailFinanceiro = await sendFinanceActionEmail({
+    titulo: `Adiantamento ${adiantamento.numero} aprovado`,
+    detalhe,
+    link: `${reembolsoPublicBaseUrl()}/?adiantamento=${encodeURIComponent(adiantamento.id)}`
+  });
+  res.json({ ok: true, emailFinanceiro });
 }));
 
 app.post("/api/adiantamentos/:id/integrar-omie", requireReembolsoPermission("reembolso_integrar_omie"), asyncRoute(async (req, res) => {
@@ -3576,6 +3713,11 @@ app.post("/api/prestacoes/:id/despesas", requireAnyReembolsoPermission("reembols
     valorMudou: true,
     justificativa: req.body.justificativa_ajuste_financeiro
   });
+  const clientToken = String(req.body.client_token || "").trim();
+  const clientTokenKey = clientToken ? `${req.user.id}:${req.params.id}:${clientToken}` : "";
+  if (clientTokenKey && pendingDespesaCreates.has(clientTokenKey)) {
+    return res.status(201).json(pendingDespesaCreates.get(clientTokenKey).response);
+  }
   const stamp = nowSql();
   const valor = req.body.quantidade_km && req.body.valor_km
     ? toMoney(Number(req.body.quantidade_km) * Number(req.body.valor_km))
@@ -3583,6 +3725,15 @@ app.post("/api/prestacoes/:id/despesas", requireAnyReembolsoPermission("reembols
   const pendingToken = String(req.body.comprovante_token || "");
   const pending = pendingToken ? pendingComprovantes.get(pendingToken) : null;
   const pendingFileExists = pending && Number(pending.prestacao_id) === Number(req.params.id) && fs.existsSync(path.join(uploadDir, pending.filename));
+  if (!req.body.confirmar_duplicidade) {
+    const duplicidades = await despesasDuplicidadeSuspeita({
+      prestacaoId: req.params.id,
+      solicitanteId: prestacao.solicitante_id,
+      dataDespesa: req.body.data_despesa,
+      valor
+    });
+    if (duplicidades.length) throw duplicidadeSuspeitaError(duplicidades);
+  }
   if (pendingFileExists) {
     const divergenciasDocumento = documentoDivergenciasComDespesa(pending.validacao, {
       data_despesa: req.body.data_despesa,
@@ -3617,8 +3768,8 @@ app.post("/api/prestacoes/:id/despesas", requireAnyReembolsoPermission("reembols
     await execute(
       `INSERT INTO rd_reembolso_comprovantes
        (despesa_id, nome_original, caminho_arquivo, mime_type, tamanho_bytes,
-        nf_chave_acesso, nf_numero, nf_data_emissao, nf_valor, nf_qr_url, nf_consulta_status, nf_divergencias, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        nf_chave_acesso, nf_cnpj_emitente, nf_numero, nf_data_emissao, nf_valor, nf_qr_url, nf_consulta_status, nf_divergencias, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         result.insertId,
         pending.originalname,
@@ -3626,6 +3777,7 @@ app.post("/api/prestacoes/:id/despesas", requireAnyReembolsoPermission("reembols
         pending.mimetype,
         pending.size,
         pending.validacao?.chave_acesso || null,
+        pending.validacao?.cnpj_emitente || null,
         pending.validacao?.numero_nf || null,
         pending.validacao?.data_emissao || null,
         pending.validacao?.valor || null,
@@ -3652,7 +3804,11 @@ app.post("/api/prestacoes/:id/despesas", requireAnyReembolsoPermission("reembols
       valor_novo: valor
     });
   }
-  res.status(201).json({ id: result.insertId });
+  const responsePayload = { id: result.insertId };
+  if (clientTokenKey) {
+    pendingDespesaCreates.set(clientTokenKey, { response: responsePayload, created_at: Date.now() });
+  }
+  res.status(201).json(responsePayload);
 }));
 
 app.put("/api/despesas/:id", requireAnyReembolsoPermission("reembolso_solicitar", "reembolso_financeiro"), asyncRoute(async (req, res) => {
@@ -3801,7 +3957,7 @@ app.post("/api/prestacoes/:id/documento-despesa", requireAnyReembolsoPermission(
     const validacao = await validarDocumentoDespesa({ prestacao, file: req.file });
     if (validacao.duplicada) {
       fs.rm(req.file.path, { force: true }, () => {});
-      return res.status(409).json({ error: validacao.divergencias[0], validacao });
+      return res.status(409).json({ error: validacao.divergencias[0], codigo: "nf_duplicada", validacao });
     }
     const token = crypto.randomBytes(18).toString("hex");
     pendingComprovantes.set(token, {
@@ -3840,16 +3996,41 @@ app.post("/api/despesas/:id/comprovantes", upload.single("arquivo"), asyncRoute(
   }
   assertPrestacaoNotFinalizada(despesa);
   assertPrestacaoEditable(despesa, req.user);
+  req.file.qr_text = req.body.qr_text || "";
+  const skipDocumentValidation = String(req.body.skip_document_validation || "") === "1";
+  const validacao = skipDocumentValidation ? { divergencias: [] } : await validarDocumentoDespesa({ prestacao: despesa, file: req.file });
+  if (validacao.duplicada) {
+    fs.rm(req.file.path, { force: true }, () => {});
+    return res.status(409).json({ error: validacao.divergencias[0], codigo: "nf_duplicada", validacao });
+  }
+  const divergenciasDocumento = documentoDivergenciasComDespesa(validacao, despesa);
+  if (divergenciasDocumento.length && !req.body.confirmar_divergencia_documento) {
+    fs.rm(req.file.path, { force: true }, () => {});
+    return res.status(409).json({
+      error: `Documento nao confere com a despesa: ${divergenciasDocumento.join(" ")}`,
+      codigo: "documento_divergente",
+      validacao
+    });
+  }
   const result = await execute(
     `INSERT INTO rd_reembolso_comprovantes
-     (despesa_id, nome_original, caminho_arquivo, mime_type, tamanho_bytes, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+     (despesa_id, nome_original, caminho_arquivo, mime_type, tamanho_bytes,
+      nf_chave_acesso, nf_cnpj_emitente, nf_numero, nf_data_emissao, nf_valor, nf_qr_url, nf_consulta_status, nf_divergencias, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       req.params.id,
       req.file.originalname,
       req.file.filename,
       req.file.mimetype,
       req.file.size,
+      validacao.chave_acesso || null,
+      validacao.cnpj_emitente || null,
+      validacao.numero_nf || null,
+      validacao.data_emissao || null,
+      validacao.valor || null,
+      validacao.qr_url || null,
+      validacao.consulta_status || null,
+      (validacao.divergencias || []).join(" | ") || null,
       nowSql()
     ]
   );
@@ -4143,7 +4324,12 @@ app.post("/api/omie/sincronizar-pagamentos", requireReembolsoPermission("reembol
 
 app.use((err, _req, res, _next) => {
   console.error(err);
-  res.status(err.statusCode || 500).json({ error: err.message || "Erro interno." });
+  res.status(err.statusCode || 500).json({
+    error: err.message || "Erro interno.",
+    codigo: err.code || undefined,
+    duplicidades: err.matches || undefined,
+    detalhes: err.details || undefined
+  });
 });
 
 let syncingOmiePagamentos = false;

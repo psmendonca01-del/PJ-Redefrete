@@ -37,6 +37,7 @@
       <img src="/assets/logo-redefrete-branco.png" alt="Redefrete" class="logo" />
       <nav class="nav" aria-label="Navegacao principal">
         <button class="nav-item active" data-view="dashboard">Painel</button>
+        <button class="nav-item" data-view="financeiro">Financeiro</button>
         <button class="nav-item" data-view="prestadores">Prestadores</button>
         <button class="nav-item" data-view="adiantamentos">Adiantamentos</button>
         <button class="nav-item" data-view="rescisoes">Rescisões</button>
@@ -99,6 +100,44 @@
         </div>
       </section>
 
+      <section id="financeiro" class="view">
+        <div class="metrics">
+          <article>
+            <span>Pendências</span>
+            <strong id="financeMetricTotal">0</strong>
+          </article>
+          <article>
+            <span>A integrar Omie</span>
+            <strong id="financeMetricOmie">0</strong>
+          </article>
+          <article>
+            <span>Valor pendente</span>
+            <strong id="financeMetricValor">R$ 0,00</strong>
+          </article>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Fila do financeiro</h2>
+              <span>Folhas, rescisões, adiantamentos e reembolsos aguardando ação</span>
+            </div>
+            <div class="list-actions">
+              <select id="financeFilter" class="filter-select" aria-label="Filtrar fila financeira">
+                <option value="todos">Todos</option>
+                <option value="folha">Folha PJ</option>
+                <option value="rescisao">Rescisões</option>
+                <option value="adiantamento">Adiantamentos PJ</option>
+                <option value="reembolso">Reembolso</option>
+                <option value="erro">Com erro</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="financeiroTable"></table>
+          </div>
+        </div>
+      </section>
+
       <section id="prestadores" class="view">
         <div class="panel prestadores-panel">
           <form id="prestadorForm" class="prestador-form prestador-modal" aria-hidden="true">
@@ -148,7 +187,7 @@
               <label>Banco<input name="banco" /></label>
               <label>Agencia<input name="agencia" /></label>
               <label>Conta<input name="conta" /></label>
-              <label>CPF/CNPJ Pix<input name="pix_cpf_cnpj" /></label>
+              <label>CPF/CNPJ do titular<input name="pix_cpf_cnpj" /></label>
             </fieldset>
             <div class="actions wide">
               <button type="button" id="clearPrestador">Limpar</button>
@@ -429,6 +468,19 @@
               </div>
             </form>
         </div>
+        <div id="approvalFlowsPanel" class="panel config-panel">
+          <div class="panel-head">
+            <h2>Fluxos de aprovação</h2>
+            <button type="button" class="icon-button" data-close-config-modal aria-label="Fechar">&times;</button>
+          </div>
+          <form id="approvalFlowsForm" class="approval-flow-form">
+            <div id="approvalFlowsConfig" class="approval-flow-config"></div>
+            <div class="actions">
+              <button type="submit" class="primary">Salvar fluxos</button>
+            </div>
+            <p id="approvalFlowsStatus" class="config-status"></p>
+          </form>
+        </div>
         <dialog id="changePasswordDialog" class="simple-dialog">
           <form id="changePasswordForm" class="form-grid" method="dialog">
             <div class="panel-head wide">
@@ -456,6 +508,8 @@
             <label>Graph Client ID<input name="graphClientId" placeholder="Application (client) ID" /></label>
             <label>Graph Client Secret<input name="graphClientSecret" type="password" placeholder="Manter secret atual" /></label>
             <label>Graph Remetente<input name="graphFrom" placeholder="nf.gestao@redefrete.com.br" /></label>
+            <label>Prazo envio NF<input name="nfDeadlineDay" type="number" inputmode="numeric" min="1" max="28" value="3" /></label>
+            <label>Follow-up antes do fim do mês<input name="nfFollowupDaysBefore" type="number" inputmode="numeric" min="1" max="15" value="3" /></label>
             <div class="actions wide">
               <button type="button" id="testSmtp">Testar e-mail</button>
               <button type="submit" class="primary">Salvar e-mail</button>
@@ -495,6 +549,7 @@
             <label>App Secret<input name="appSecret" type="password" placeholder="Manter secret atual" /></label>
             <label>Dia de vencimento<input name="dueDay" type="number" inputmode="numeric" min="1" max="28" value="5" /></label>
             <label>ID conta corrente<input name="contaCorrenteId" placeholder="Opcional: codigo interno da conta Omie" /></label>
+            <label>ID conta Adiantamento ao Fornecedor<input name="contaAdiantamentoFornecedorId" placeholder="Conta destino de adiantamentos PJ" /></label>
             <label>Banco<input name="banco" value="341" /></label>
             <label>Agência<input name="agencia" value="1268" /></label>
             <label>Conta<input name="conta" value="33981-7" /></label>
@@ -529,11 +584,15 @@
       <div class="busy-box">
         <strong id="busyTitle">Integrando com Omie</strong>
         <span id="busyMessage">Aguarde, estamos processando as informações.</span>
-        <div class="progress"><span></span></div>
+        <div class="busy-progress-head">
+          <small id="busyProgressLabel">Processando</small>
+          <strong id="busyProgressPercent">0%</strong>
+        </div>
+        <div id="busyProgress" class="progress"><span></span></div>
       </div>
     </div>
     <div id="toast" role="status"></div>
-    <script src="/app.js"></script>
+    <script src="/app.js?v=omie-approval-audit-20260605"></script>
   </body>
 </html>
 
