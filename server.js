@@ -8,6 +8,7 @@ const os = require("os");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const multer = require("multer");
+const ExcelJS = require("exceljs");
 const { XMLParser } = require("fast-xml-parser");
 const { PDFParse } = require("pdf-parse");
 const { readEnv, writeEnv } = require("./env-store");
@@ -3545,7 +3546,18 @@ async function reembolsoPrestacaoEmailDemonstrativo(id, aprovadorEmail) {
     </div>`;
 }
 
-async function sendReembolsoApprovalEmailsTo(req, { titulo, detalhe, link, emails, prestacaoId }) {
+function reembolsoApprovalMessageBlock(mensagem) {
+  const texto = String(mensagem || "").trim();
+  if (!texto) return "";
+  return `
+    <div style="margin:12px 0 16px;padding:12px 14px;border-left:4px solid #002b5f;background:#f8fafc;border-radius:4px">
+      <strong style="display:block;margin-bottom:6px;color:#0b1726">Mensagem</strong>
+      <div style="white-space:pre-line;color:#344054;line-height:1.45">${escapeHtml(texto)}</div>
+    </div>
+  `;
+}
+
+async function sendReembolsoApprovalEmailsTo(req, { titulo, detalhe, link, emails, prestacaoId, mensagem }) {
   const normalizedEmails = (emails || []).map((email) => String(email || "").toLowerCase()).filter(Boolean);
   if (!normalizedEmails.length) return { sent: false, enviados: [], falhas: [], total: 0 };
   const [aprovadores] = await pool.query(
@@ -3570,10 +3582,11 @@ async function sendReembolsoApprovalEmailsTo(req, { titulo, detalhe, link, email
     try {
       const safeLink = publicUrl(link);
       const demonstrativo = prestacaoId ? await reembolsoPrestacaoEmailDemonstrativo(prestacaoId, aprovador.email) : "";
-      const approveLink = prestacaoId ? reembolsoEmailActionUrl({ kind: "reembolso_prestacao", action: "aprovar", id: Number(prestacaoId), email: aprovador.email }) : "";
-      const rejectLink = prestacaoId ? reembolsoEmailActionUrl({ kind: "reembolso_prestacao", action: "reprovar", id: Number(prestacaoId), email: aprovador.email, reason: "Solicitado ajuste pelo aprovador." }) : "";
+      const approveLink = safeLink;
+      const rejectLink = safeLink;
       const html = `
         <p>Ola, ${escapeHtml(aprovador.nome)}.</p>
+        ${reembolsoApprovalMessageBlock(mensagem)}
         <p>${escapeHtml(detalhe)}</p>
         ${prestacaoId ? `
           <div style="margin:18px 0 12px;padding:14px 16px;border:1px solid #d7dde6;border-radius:6px;background:#ffffff">
@@ -3828,9 +3841,7 @@ async function renderRescisaoApprovalEmailDemonstrativo(rescisaoInput) {
 
 function isFinanceActionUser(user) {
   if (!user?.ativo) return false;
-  if (user.perfil === "financeiro") return true;
-  if (["master", "administrador"].includes(user.perfil)) return false;
-  return hasPermission(user, "integrate_omie") || hasPermission(user, "reembolso_financeiro") || hasPermission(user, "reembolso_integrar_omie");
+  return user.perfil === "financeiro";
 }
 
 async function getFinanceActionUsers(db = pool) {
@@ -4526,8 +4537,20 @@ async function htmlToPdfBuffer(html) {
 
 function formatDateBr(value) {
   if (!value) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo" }).format(value);
+  }
   const [year, month, day] = String(value).slice(0, 10).split("-");
   return year && month && day ? `${day}/${month}/${year}` : String(value);
+}
+
+function formatDateTimeBr(value) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "America/Sao_Paulo",
+  }).format(new Date(value));
 }
 
 function renderFolhaItemReportHtml(item, competencia) {
@@ -5691,6 +5714,99 @@ async function getPrestadores(user) {
   );
   return rows.map((row) => sanitizePrestador(row, user));
 }
+
+function normalizeText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function prestadorReportValue(value, canViewValues) {
+  if (value === null || value === undefined || value === "") return "";
+  return canViewValues ? value : "Restrito";
+}
+
+function prestadorReportRows(prestadores, user) {
+  const canViewValues = canSeeSensitiveValues(user);
+  return prestadores.map((p) => ({
+    status: p.ativo ? "Ativo" : "Inativo",
+    nome: p.nome || "",
+    razao_social: p.razao_social || "",
+    cpf: p.cpf || "",
+    cnpj: p.cnpj || "",
+    email: p.email || "",
+    telefone: p.telefone || "",
+    cliente: p.cliente_nome || p.unidade_nome || "",
+    projeto: p.projeto || "",
+    departamento: p.departamento || "",
+    funcao: p.funcao || "",
+    categoria: p.categoria || "",
+    nivel_cargo: p.cargo_nivel === "gestao" ? "Gestão" : "Operação",
+    precificacao: p.precificacao_tipo === "diaria" ? "R$/dia trabalhado" : "R$/mês fechado",
+    data_admissao: p.data_admissao || "",
+    data_rescisao: p.data_rescisao || "",
+    valor_contrato: prestadorReportValue(p.salario_contrato, canViewValues),
+    valor_dia: prestadorReportValue(p.valor_dia, canViewValues),
+    banco: p.banco || "",
+    agencia: p.agencia || "",
+    conta: p.conta || "",
+    cpf_cnpj_titular: p.pix_cpf_cnpj || "",
+    omie_codigo_cliente: p.omie_codigo_cliente || "",
+  }));
+}
+
+function filterPrestadorReportRows(rows, { search = "", status = "todos" } = {}) {
+  const term = normalizeText(search);
+  return rows.filter((row) => {
+    if (status === "ativos" && row.status !== "Ativo") return false;
+    if (status === "inativos" && row.status !== "Inativo") return false;
+    if (!term) return true;
+    return [
+      row.nome,
+      row.razao_social,
+      row.cpf,
+      row.cnpj,
+      row.email,
+      row.telefone,
+      row.cliente,
+      row.projeto,
+      row.departamento,
+      row.funcao,
+      row.categoria,
+      row.banco,
+      row.agencia,
+      row.conta,
+    ].some((value) => normalizeText(value).includes(term));
+  });
+}
+
+const prestadorReportColumns = [
+  ["status", "Status"],
+  ["nome", "Nome"],
+  ["razao_social", "Razão social"],
+  ["cpf", "CPF"],
+  ["cnpj", "CNPJ"],
+  ["email", "E-mail"],
+  ["telefone", "Telefone"],
+  ["cliente", "Cliente"],
+  ["projeto", "Projeto / Operação"],
+  ["departamento", "Departamento"],
+  ["funcao", "Função"],
+  ["categoria", "Categoria"],
+  ["nivel_cargo", "Nível do cargo"],
+  ["precificacao", "Precificação"],
+  ["data_admissao", "Admissão"],
+  ["data_rescisao", "Rescisão"],
+  ["valor_contrato", "R$ Contrato"],
+  ["valor_dia", "Valor por dia"],
+  ["banco", "Banco"],
+  ["agencia", "Agência"],
+  ["conta", "Conta"],
+  ["cpf_cnpj_titular", "CPF/CNPJ do titular"],
+  ["omie_codigo_cliente", "Código Omie"],
+];
 
 function canSeeAnyFinancialValue(user) {
   return isFullAccess(user) || hasPermission(user, "view_values_open") || hasPermission(user, "view_values_closed");
@@ -6946,6 +7062,86 @@ app.get("/api/prestadores", async (req, res) => {
   }
 });
 
+app.get("/api/prestadores/relatorio", async (req, res) => {
+  if (!hasPermission(req.user, "generate_reports")) {
+    return res.status(403).json({ error: "Usuario sem permissao para gerar relatorio." });
+  }
+  try {
+    const rows = filterPrestadorReportRows(
+      prestadorReportRows(await getPrestadores(req.user), req.user),
+      { search: req.query.search, status: req.query.status }
+    );
+    res.json({
+      gerado_em: new Date().toISOString(),
+      total: rows.length,
+      filtros: {
+        search: req.query.search || "",
+        status: req.query.status || "todos",
+      },
+      columns: prestadorReportColumns.map(([key, label]) => ({ key, label })),
+      rows,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Nao foi possivel gerar o relatorio de prestadores." });
+  }
+});
+
+async function prestadoresRelatorioXlsxRoute(req, res) {
+  if (!hasPermission(req.user, "generate_reports")) {
+    return res.status(403).json({ error: "Usuario sem permissao para gerar relatorio." });
+  }
+  try {
+    const rows = filterPrestadorReportRows(
+      prestadorReportRows(await getPrestadores(req.user), req.user),
+      { search: req.query.search, status: req.query.status }
+    );
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "Redefrete";
+    workbook.created = new Date();
+    const sheet = workbook.addWorksheet("Prestadores");
+    sheet.addRow(["Relatório de cadastro de prestadores"]);
+    sheet.addRow([`Gerado em ${formatDateTimeBr(new Date())}`]);
+    sheet.addRow([`Total de registros: ${rows.length}`]);
+    sheet.addRow([]);
+    sheet.addRow(prestadorReportColumns.map(([, label]) => label));
+    sheet.getRow(1).font = { bold: true, size: 14 };
+    sheet.getRow(5).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    sheet.getRow(5).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF002B5F" } };
+    rows.forEach((row) => {
+      sheet.addRow(prestadorReportColumns.map(([key]) => {
+        if (["data_admissao", "data_rescisao"].includes(key)) return row[key] ? formatDateBr(row[key]) : "";
+        if (["valor_contrato", "valor_dia"].includes(key) && typeof row[key] === "number") return row[key];
+        return row[key] ?? "";
+      }));
+    });
+    sheet.views = [{ state: "frozen", ySplit: 5 }];
+    sheet.autoFilter = {
+      from: { row: 5, column: 1 },
+      to: { row: 5, column: prestadorReportColumns.length },
+    };
+    sheet.columns.forEach((column, index) => {
+      const header = prestadorReportColumns[index]?.[1] || "";
+      let max = header.length;
+      column.eachCell({ includeEmpty: true }, (cell) => {
+        max = Math.max(max, String(cell.value || "").length);
+      });
+      column.width = Math.min(Math.max(max + 2, 12), 34);
+    });
+    for (const columnIndex of [17, 18]) {
+      sheet.getColumn(columnIndex).numFmt = '"R$" #,##0.00';
+    }
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="cadastro-prestadores-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Nao foi possivel gerar o XLSX de prestadores." });
+  }
+}
+
+app.get("/api/prestadores/relatorio-xlsx", prestadoresRelatorioXlsxRoute);
+app.get("/api/prestadores/relatorio.xlsx", prestadoresRelatorioXlsxRoute);
+
 app.get("/api/prestadores/:id/conta-corrente", async (req, res) => {
   try {
     const conta = await getPrestadorContaCorrente(Number(req.params.id), req.user);
@@ -7809,6 +8005,7 @@ app.get("/api/aprovacoes/reembolso/comprovantes/:id/visualizar", requireAnyAppro
 
 app.post("/api/reembolso/prestacoes/:id/aprovar-superior", requirePermission("reembolso_aprovar"), async (req, res) => {
   try {
+    const comentarioAprovador = String(req.body.justificativa || req.body.comentario || "").trim();
     const [[prestacao]] = await pool.query("SELECT * FROM rd_reembolso_prestacoes WHERE id = ?", [req.params.id]);
     if (!prestacao) return res.status(404).json({ error: "Prestacao nao encontrada." });
     if (prestacao.status !== "enviada_superior") return res.status(400).json({ error: "Prestacao nao esta aguardando aprovacao do superior." });
@@ -7826,7 +8023,7 @@ app.post("/api/reembolso/prestacoes/:id/aprovar-superior", requirePermission("re
     const codigo = reembolsoAuthCode("APR");
     await pool.query(
       "INSERT INTO rd_reembolso_aprovacoes (prestacao_id, usuario_id, etapa, decisao, justificativa, autenticacao, created_at) VALUES (?, ?, ?, 'aprovado', ?, ?, NOW())",
-      [req.params.id, req.user.id, expectedStep.etapa, req.body.justificativa || req.body.comentario || null, codigo],
+      [req.params.id, req.user.id, expectedStep.etapa, comentarioAprovador || null, codigo],
     );
     const nextStep = await nextReembolsoApprovalStep(req.params.id);
     let dataPagamento = null;
@@ -7842,6 +8039,7 @@ app.post("/api/reembolso/prestacoes/:id/aprovar-superior", requirePermission("re
           link: appUrl(req, `/aprovacoes.html?tipo=reembolso_superior&id=${encodeURIComponent(req.params.id)}`),
           emails: [nextStep.email],
           prestacaoId: Number(req.params.id),
+          mensagem: comentarioAprovador ? `${req.user.nome || "Aprovador"}: ${comentarioAprovador}` : "",
         });
         if (emailProximoAprovador?.falhas?.length) {
           await pool.query(
@@ -7868,7 +8066,7 @@ app.post("/api/reembolso/prestacoes/:id/aprovar-superior", requirePermission("re
       );
       emailFinanceiro = await sendFinanceActionEmail(req, {
         titulo: `Prestacao ${prestacao.numero || req.params.id} aprovada`,
-        detalhe: `Prestacao aprovada pelos aprovadores. Total despesas ${formatCurrency(prestacao.total_despesas)}, a reembolsar ${formatCurrency(prestacao.valor_reembolsar)}, a devolver ${formatCurrency(prestacao.saldo_devolver)}. Aguarda acao financeira.`,
+        detalhe: `Prestacao aprovada pelos aprovadores. Total despesas ${formatCurrency(prestacao.total_despesas)}, a reembolsar ${formatCurrency(prestacao.valor_reembolsar)}, a devolver ${formatCurrency(prestacao.saldo_devolver)}. Aguarda acao financeira.${comentarioAprovador ? ` Comentario final: ${comentarioAprovador}` : ""}`,
         link: reembolsoAppUrl(req, `/?prestacao=${encodeURIComponent(req.params.id)}`),
       });
       if (emailFinanceiro?.falhas?.length) {
@@ -9799,7 +9997,24 @@ app.post("/api/folhas", async (req, res) => {
   }
 });
 
-ensureAuthSchema()
+async function ensureAuthSchemaWithRetry(maxAttempts = 5) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await ensureAuthSchema();
+      return;
+    } catch (error) {
+      lastError = error;
+      console.error(`Nao foi possivel preparar o controle de acesso (tentativa ${attempt}/${maxAttempts}):`, error.message);
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 3000));
+      }
+    }
+  }
+  throw lastError;
+}
+
+ensureAuthSchemaWithRetry()
   .then(() => {
     app.listen(port, host, () => {
       console.log(`Sistema Redefrete rodando em http://${host}:${port}`);

@@ -29,6 +29,16 @@ fs.mkdirSync(uploadDir, { recursive: true });
 
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.get("/api/build-info", (_req, res) => {
+  res.json({
+    ok: true,
+    app: "reembolso-despesas",
+    build: "cobranca-saldo-20260609-4",
+    pid: process.pid,
+    cwd: __dirname,
+    time: nowSql()
+  });
+});
 app.use("/vendor/html5-qrcode", express.static(path.join(__dirname, "node_modules", "html5-qrcode")));
 app.use("/vendor/jsqr", express.static(path.join(__dirname, "node_modules", "jsqr", "dist")));
 app.use(express.static(path.join(__dirname, "public")));
@@ -1173,13 +1183,13 @@ async function syncOmiePagamentoPrestacao(prestacao) {
   return { id: prestacao.id, numero: prestacao.numero, status_titulo: statusTitulo, valor_pago: valorPagoFinal, pago };
 }
 
-async function syncOmiePagamentos({ prestacaoId = null, limit = 50 } = {}) {
+async function syncOmiePagamentos({ prestacaoId = null, limit = 50, force = false } = {}) {
   const params = [];
   let where = "WHERE omie_codigo_lancamento IS NOT NULL AND omie_status IN ('integrado', 'pago') AND status IN ('a_pagar', 'a_devolver', 'pago', 'finalizada')";
   if (prestacaoId) {
     where += " AND id = ?";
     params.push(prestacaoId);
-  } else {
+  } else if (!force) {
     where += " AND (omie_pago_em IS NULL OR omie_sincronizado_em IS NULL OR omie_sincronizado_em < DATE_SUB(NOW(), INTERVAL 30 MINUTE))";
   }
   params.push(Number(limit));
@@ -1193,7 +1203,20 @@ async function syncOmiePagamentos({ prestacaoId = null, limit = 50 } = {}) {
   );
   const resultados = [];
   for (const prestacao of prestacoes) {
-    resultados.push(await syncOmiePagamentoPrestacao(prestacao));
+    try {
+      resultados.push(await syncOmiePagamentoPrestacao(prestacao));
+    } catch (error) {
+      await execute(
+        "UPDATE rd_reembolso_prestacoes SET omie_erro = ?, omie_sincronizado_em = ?, updated_at = ? WHERE id = ?",
+        [error.message, nowSql(), nowSql(), prestacao.id]
+      ).catch(() => null);
+      resultados.push({
+        id: prestacao.id,
+        numero: prestacao.numero,
+        erro: error.message || "Falha ao consultar pagamento no Omie.",
+        pago: false,
+      });
+    }
   }
   return resultados;
 }
@@ -1730,9 +1753,7 @@ async function sendGraphMail({ to, subject, html }) {
 
 function isFinanceActionUser(user) {
   if (!user?.ativo) return false;
-  if (user.perfil === "financeiro") return true;
-  if (["master", "administrador"].includes(user.perfil)) return false;
-  return hasPermission(user, "reembolso_financeiro") || hasPermission(user, "reembolso_integrar_omie");
+  return user.perfil === "financeiro";
 }
 
 async function getFinanceActionUsers() {
@@ -1782,11 +1803,92 @@ async function sendFinanceActionEmail({ titulo, detalhe, link }) {
   return { sent: enviados.length > 0, enviados, falhas, total: users.length };
 }
 
-async function sendReembolsoApprovalEmails({ titulo, detalhe, link, emails, prestacaoId }) {
-  return sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails: emails || REEMBOLSO_APPROVAL_FLOW.map((item) => item.email), prestacaoId });
+async function sendAdiantamentoCobrancaEmail({ adiantamento, saldo, movimentos, pendencias, enviadoPor }) {
+  if (!emailConfigured()) return { sent: false, reason: "E-mail nao configurado." };
+  const destinatario = String(adiantamento.solicitante_email || adiantamento.email || "").trim();
+  if (!destinatario) return { sent: false, reason: "Solicitante sem e-mail cadastrado." };
+  const safeLink = publicUrl(reembolsoPublicBaseUrl());
+  const pendenciaRows = (pendencias || []).map((item) => `
+    <tr>
+      <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(item.numero || "-")}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(formatDate(item.data_adiantamento))}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right">${escapeHtml(formatMoney(item.valor))}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;font-weight:800;color:#9a3412">${escapeHtml(formatMoney(item.saldo))}</td>
+    </tr>
+  `).join("");
+  const rows = (movimentos || []).map((mov) => `
+    <tr>
+      <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(formatDate(mov.data_movimento))}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(mov.adiantamento_numero || "-")}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(mov.numero_documento || mov.prestacao_numero || "-")}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb">${escapeHtml(mov.tipo || "-")}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;font-weight:700">${escapeHtml(formatMoney(mov.valor))}</td>
+    </tr>
+  `).join("");
+  const html = `
+    <p>Ola, ${escapeHtml(adiantamento.solicitante || adiantamento.nome || "solicitante")}.</p>
+    <p>Identificamos saldo pendente de regularizacao referente aos adiantamentos de despesas abaixo.</p>
+    <div style="margin:16px 0;padding:14px;border:1px solid #d7dde6;border-radius:6px;background:#f8fafc">
+      <strong style="display:block;margin-bottom:10px;color:#0b1726">Resumo da cobranca</strong>
+      <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">
+        <tr><td style="width:180px;padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Prestador</td><td style="padding:7px;border-top:1px solid #e5e7eb">${escapeHtml(adiantamento.solicitante || adiantamento.nome || "")}</td></tr>
+        <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Adiantamentos pendentes</td><td style="padding:7px;border-top:1px solid #e5e7eb">${escapeHtml(String((pendencias || []).length))}</td></tr>
+        <tr><td style="padding:7px;border-top:1px solid #e5e7eb;color:#667085;font-weight:700">Saldo total pendente</td><td style="padding:7px;border-top:1px solid #e5e7eb;font-weight:800;color:#9a3412">${escapeHtml(formatMoney(saldo))}</td></tr>
+      </table>
+    </div>
+    <div style="margin:16px 0;padding:14px;border:1px solid #d7dde6;border-radius:6px;background:#ffffff">
+      <strong style="display:block;margin-bottom:10px;color:#0b1726">Pendencias em aberto</strong>
+      <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">
+        <tr>
+          <th style="text-align:left;padding:8px;background:#f1f5f9;color:#334155">Adiantamento</th>
+          <th style="text-align:left;padding:8px;background:#f1f5f9;color:#334155">Data</th>
+          <th style="text-align:right;padding:8px;background:#f1f5f9;color:#334155">Valor original</th>
+          <th style="text-align:right;padding:8px;background:#f1f5f9;color:#334155">Saldo</th>
+        </tr>
+        ${pendenciaRows || `<tr><td colspan="4" style="padding:8px;border-top:1px solid #e5e7eb">Sem pendencias detalhadas.</td></tr>`}
+      </table>
+    </div>
+    <div style="margin:16px 0;padding:14px;border:1px solid #d7dde6;border-radius:6px;background:#ffffff">
+      <strong style="display:block;margin-bottom:10px;color:#0b1726">Extrato de movimentacoes</strong>
+      <table style="width:100%;border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px">
+        <tr>
+          <th style="text-align:left;padding:8px;background:#f1f5f9;color:#334155">Data</th>
+          <th style="text-align:left;padding:8px;background:#f1f5f9;color:#334155">Adiantamento</th>
+          <th style="text-align:left;padding:8px;background:#f1f5f9;color:#334155">Documento</th>
+          <th style="text-align:left;padding:8px;background:#f1f5f9;color:#334155">Movimento</th>
+          <th style="text-align:right;padding:8px;background:#f1f5f9;color:#334155">Valor</th>
+        </tr>
+        ${rows || `<tr><td colspan="5" style="padding:8px;border-top:1px solid #e5e7eb">Sem movimentacoes detalhadas.</td></tr>`}
+      </table>
+    </div>
+    <p>Solicitamos, por gentileza, a regularizacao deste saldo.</p>
+    <p>Caso o valor tenha sido utilizado em despesas, favor incluir a prestacao de contas correspondente no sistema. Caso nao tenha sido utilizado, favor realizar a devolucao conforme orientacao do financeiro.</p>
+    <p><a href="${escapeHtml(safeLink)}" style="display:inline-block;background:#002b5f;color:#fff;text-decoration:none;padding:10px 14px;border-radius:4px;font-weight:700">Acessar sistema</a></p>
+    <p style="color:#667085;font-size:12px">Mensagem enviada por ${escapeHtml(enviadoPor || "Financeiro Redefrete")}.</p>
+  `;
+  return sendGraphMail({
+    to: destinatario,
+    subject: `Regularizacao de adiantamentos pendentes - ${formatMoney(saldo)}`,
+    html,
+  });
 }
 
-async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails, prestacaoId }) {
+function approvalMessageBlock(mensagem) {
+  const texto = String(mensagem || "").trim();
+  if (!texto) return "";
+  return `
+    <div style="margin:12px 0 16px;padding:12px 14px;border-left:4px solid #002b5f;background:#f8fafc;border-radius:4px">
+      <strong style="display:block;margin-bottom:6px;color:#0b1726">Mensagem</strong>
+      <div style="white-space:pre-line;color:#344054;line-height:1.45">${escapeHtml(texto)}</div>
+    </div>
+  `;
+}
+
+async function sendReembolsoApprovalEmails({ titulo, detalhe, link, emails, prestacaoId, mensagem }) {
+  return sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails: emails || REEMBOLSO_APPROVAL_FLOW.map((item) => item.email), prestacaoId, mensagem });
+}
+
+async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails, prestacaoId, mensagem }) {
   const normalizedEmails = (emails || []).map((email) => String(email || "").toLowerCase()).filter(Boolean);
   if (!normalizedEmails.length) return [];
   const aprovadores = await query(
@@ -1802,10 +1904,11 @@ async function sendReembolsoApprovalEmailsTo({ titulo, detalhe, link, emails, pr
     try {
       const safeLink = publicUrl(link);
       const demonstrativo = prestacaoId ? await reembolsoPrestacaoEmailDemonstrativo(prestacaoId, aprovador.email) : "";
-      const approveLink = prestacaoId ? emailActionUrl({ kind: "reembolso_prestacao", action: "aprovar", id: Number(prestacaoId), email: aprovador.email }) : "";
-      const rejectLink = prestacaoId ? emailActionUrl({ kind: "reembolso_prestacao", action: "reprovar", id: Number(prestacaoId), email: aprovador.email, reason: "Solicitado ajuste pelo aprovador." }) : "";
+      const approveLink = safeLink;
+      const rejectLink = safeLink;
       const html = `
         <p>Ola, ${escapeHtml(aprovador.nome)}.</p>
+        ${approvalMessageBlock(mensagem)}
         <p>${escapeHtml(detalhe)}</p>
         ${prestacaoId ? `
           <div style="margin:18px 0 12px;padding:14px 16px;border:1px solid #d7dde6;border-radius:6px;background:#ffffff">
@@ -2241,7 +2344,17 @@ async function recalcPrestacao(id) {
 }
 
 async function upsertContaCorrenteMovimento({ solicitanteId, prestacaoId = null, adiantamentoId = null, tipo, dataMovimento, valor, numeroDocumento, descricao, omieCodigoLancamento = null, omieCodigoIntegracao = null, omieStatus = "interno" }) {
-  const existing = tipo === "devolucao" ? [] : await query(
+  const signedValue = toMoney(valor);
+  const existing = tipo === "devolucao" ? await query(
+      `SELECT id FROM rd_reembolso_conta_corrente
+        WHERE tipo = ?
+          AND COALESCE(adiantamento_id, 0) = COALESCE(?, 0)
+          AND data_movimento = ?
+          AND ROUND(valor, 2) = ROUND(?, 2)
+          AND COALESCE(numero_documento, '') = COALESCE(?, '')
+        LIMIT 1`,
+      [tipo, adiantamentoId, sqlDate(dataMovimento), signedValue, numeroDocumento || ""]
+    ) : await query(
       `SELECT id FROM rd_reembolso_conta_corrente
         WHERE tipo = ?
           AND COALESCE(prestacao_id, 0) = COALESCE(?, 0)
@@ -2250,7 +2363,6 @@ async function upsertContaCorrenteMovimento({ solicitanteId, prestacaoId = null,
       [tipo, prestacaoId, adiantamentoId]
     );
   const stamp = nowSql();
-  const signedValue = toMoney(valor);
   if (existing.length) {
     await execute(
       `UPDATE rd_reembolso_conta_corrente
@@ -2540,6 +2652,7 @@ async function nextReembolsoApprovalStep(prestacaoId) {
 }
 
 async function aprovarPrestacaoReembolso(prestacaoId, user, justificativa = null) {
+  const comentarioAprovador = String(justificativa || "").trim();
   const prestacao = await getPrestacao(prestacaoId);
   if (!prestacao) {
     const error = new Error("Prestacao nao encontrada.");
@@ -2576,7 +2689,7 @@ async function aprovarPrestacaoReembolso(prestacaoId, user, justificativa = null
   const aprovadoEm = nowSql();
   await execute(
     "INSERT INTO rd_reembolso_aprovacoes (prestacao_id, usuario_id, etapa, decisao, justificativa, autenticacao, created_at) VALUES (?, ?, ?, 'aprovado', ?, ?, ?)",
-    [prestacaoId, user.id, expectedStep.etapa, justificativa || null, codigo, aprovadoEm]
+    [prestacaoId, user.id, expectedStep.etapa, comentarioAprovador || null, codigo, aprovadoEm]
   );
   const nextStep = await nextReembolsoApprovalStep(prestacaoId);
   let dataPagamento = null;
@@ -2591,7 +2704,8 @@ async function aprovarPrestacaoReembolso(prestacaoId, user, justificativa = null
         detalhe,
         link: `${approvalCentralUrl()}?tipo=reembolso_superior&id=${encodeURIComponent(prestacaoId)}`,
         emails: [nextStep.email],
-        prestacaoId
+        prestacaoId,
+        mensagem: comentarioAprovador ? `${user.nome || "Aprovador"}: ${comentarioAprovador}` : ""
       });
       if (emailProximoAprovador?.falhas?.length) {
         await addHistory(prestacaoId, user.id, "falha_email_aprovacao", `Falha ao enviar e-mail para ${nextStep.nome}: ${JSON.stringify(emailProximoAprovador.falhas)}`);
@@ -2612,7 +2726,7 @@ async function aprovarPrestacaoReembolso(prestacaoId, user, justificativa = null
     );
     const detalhe = await reembolsoPrestacaoEmailResumo(
       prestacaoId,
-      `Prestacao ${prestacao.numero || prestacaoId} aprovada pelos aprovadores e aguardando validacao financeira.`
+      `Prestacao ${prestacao.numero || prestacaoId} aprovada pelos aprovadores e aguardando validacao financeira.${comentarioAprovador ? ` Comentario final: ${comentarioAprovador}` : ""}`
     );
     emailFinanceiro = await sendFinanceActionEmail({
       titulo: `Prestacao ${prestacao.numero || prestacaoId} aprovada`,
@@ -2947,11 +3061,14 @@ async function reembolsoAdiantamentoEmailResumo(id, fallback = "") {
 
 async function getAvailableAdiantamentos(solicitanteId) {
   return query(
-    `SELECT a.*
+    `SELECT a.*, COALESCE(SUM(m.valor), 0) AS saldo
        FROM rd_reembolso_adiantamentos a
+       LEFT JOIN rd_reembolso_conta_corrente m ON m.adiantamento_id = a.id
       WHERE a.solicitante_id = ?
         AND a.status = 'aprovado'
         AND a.prestacao_id IS NULL
+      GROUP BY a.id
+      HAVING saldo > 0.009
       ORDER BY a.data_adiantamento, a.id`,
     [solicitanteId]
   );
@@ -3285,6 +3402,9 @@ app.use("/api", (req, res, next) => {
   });
 });
 
+app.post("/api/adiantamentos/:id/cobrar-saldo", requireAnyReembolsoPermission("reembolso_financeiro", "reembolso_integrar_omie"), asyncRoute(cobrarSaldoAdiantamento));
+app.post("/api/adiantamentos-cobranca/:id", requireAnyReembolsoPermission("reembolso_financeiro", "reembolso_integrar_omie"), asyncRoute(cobrarSaldoAdiantamento));
+
 app.get("/api/auth/me", (req, res) => {
   res.json({ usuario: publicUser(req.user) });
 });
@@ -3386,6 +3506,8 @@ const contaCorrenteAdiantamentosRoute = asyncRoute(async (req, res) => {
 app.get("/api/conta-corrente-adiantamentos", contaCorrenteAdiantamentosRoute);
 app.get("/api/adiantamentos/conta-corrente", contaCorrenteAdiantamentosRoute);
 
+const devolucaoLocks = new Set();
+
 app.post("/api/adiantamentos/devolucoes", requireReembolsoPermission("reembolso_integrar_omie"), asyncRoute(async (req, res) => {
   if (!canOperateFinanceiro(req.user)) {
     return res.status(403).json({ error: "Somente financeiro ou administrador pode registrar devolucao de adiantamento." });
@@ -3401,15 +3523,48 @@ app.post("/api/adiantamentos/devolucoes", requireReembolsoPermission("reembolso_
   const dataAdiantamento = formatDate(adiantamento.data_adiantamento);
   const numeroDocumento = adiantamento.numero;
   const descricao = `Devolucao saldo do adiantamento nº ${adiantamento.numero}, de ${dataAdiantamento}.`;
-  const resultado = await integrarOmieDevolucaoAdiantamento({
-    solicitanteId,
-    adiantamentoId: adiantamento.id,
-    valor,
-    dataDevolucao: req.body.data_devolucao || new Date(),
-    numeroDocumento,
-    descricao
-  });
-  res.json({ ok: true, saldo_anterior: saldo, saldo_atual: await saldoAdiantamentoPorId(adiantamento.id), descricao, ...resultado });
+  const dataDevolucao = sqlDate(req.body.data_devolucao || new Date());
+  const duplicate = await query(
+    `SELECT id, omie_codigo_lancamento, omie_codigo_integracao
+       FROM rd_reembolso_conta_corrente
+      WHERE tipo = 'devolucao'
+        AND adiantamento_id = ?
+        AND data_movimento = ?
+        AND ROUND(valor, 2) = ROUND(?, 2)
+        AND COALESCE(numero_documento, '') = ?
+      LIMIT 1`,
+    [adiantamento.id, dataDevolucao, -valor, numeroDocumento]
+  );
+  if (duplicate.length) {
+    return res.json({
+      ok: true,
+      duplicado: true,
+      message: "Devolucao ja registrada anteriormente. Nenhum novo lancamento foi enviado ao Omie.",
+      saldo_anterior: saldo,
+      saldo_atual: await saldoAdiantamentoPorId(adiantamento.id),
+      descricao,
+      codigo_lancamento: duplicate[0].omie_codigo_lancamento,
+      codigo_integracao: duplicate[0].omie_codigo_integracao
+    });
+  }
+  const lockKey = `${adiantamento.id}|${dataDevolucao}|${toMoney(valor)}|${numeroDocumento}`;
+  if (devolucaoLocks.has(lockKey)) {
+    return res.status(409).json({ error: "Esta devolucao ja esta em processamento. Aguarde a conclusao antes de tentar novamente." });
+  }
+  devolucaoLocks.add(lockKey);
+  try {
+    const resultado = await integrarOmieDevolucaoAdiantamento({
+      solicitanteId,
+      adiantamentoId: adiantamento.id,
+      valor,
+      dataDevolucao,
+      numeroDocumento,
+      descricao
+    });
+    res.json({ ok: true, saldo_anterior: saldo, saldo_atual: await saldoAdiantamentoPorId(adiantamento.id), descricao, ...resultado });
+  } finally {
+    devolucaoLocks.delete(lockKey);
+  }
 }));
 
 app.get("/api/adiantamentos", asyncRoute(async (req, res) => {
@@ -3426,6 +3581,67 @@ app.get("/api/adiantamentos", asyncRoute(async (req, res) => {
   `, params);
   res.json(rows);
 }));
+
+async function cobrarSaldoAdiantamento(req, res) {
+  if (!canOperateFinanceiro(req.user)) {
+    return res.status(403).json({ error: "Somente financeiro ou administrador pode enviar cobranca de saldo." });
+  }
+  const rows = await query(
+    `SELECT a.*, u.nome AS solicitante, u.email AS solicitante_email
+       FROM rd_reembolso_adiantamentos a
+       JOIN usuarios u ON u.id = a.solicitante_id
+      WHERE a.id = ?
+      LIMIT 1`,
+    [req.params.id]
+  );
+  const adiantamento = rows[0];
+  if (!adiantamento) return res.status(404).json({ error: "Adiantamento nao encontrado." });
+  const pendencias = await query(
+    `SELECT a.id, a.numero, a.data_adiantamento, a.valor,
+            COALESCE(SUM(m.valor), 0) AS saldo
+       FROM rd_reembolso_adiantamentos a
+       JOIN rd_reembolso_conta_corrente m ON m.adiantamento_id = a.id
+      WHERE a.solicitante_id = ?
+      GROUP BY a.id, a.numero, a.data_adiantamento, a.valor
+     HAVING saldo > 0.009
+      ORDER BY a.data_adiantamento, a.id`,
+    [adiantamento.solicitante_id]
+  );
+  const saldo = toMoney(pendencias.reduce((sum, item) => sum + Number(item.saldo || 0), 0));
+  if (saldo <= 0.009) return res.status(400).json({ error: "Este solicitante nao possui saldo pendente." });
+  const pendingIds = pendencias.map((item) => Number(item.id)).filter(Boolean);
+  const movimentos = await query(
+    `SELECT m.tipo, m.data_movimento, m.valor, m.numero_documento, m.descricao,
+            a.numero AS adiantamento_numero,
+            p.numero AS prestacao_numero
+       FROM rd_reembolso_conta_corrente m
+       LEFT JOIN rd_reembolso_adiantamentos a ON a.id = m.adiantamento_id
+       LEFT JOIN rd_reembolso_prestacoes p ON p.id = m.prestacao_id
+      WHERE m.adiantamento_id IN (${pendingIds.map(() => "?").join(",")})
+      ORDER BY m.data_movimento, m.id`,
+    pendingIds
+  );
+  const resultado = await sendAdiantamentoCobrancaEmail({
+    adiantamento,
+    saldo,
+    movimentos,
+    pendencias,
+    enviadoPor: req.user.nome || req.user.email || "Financeiro",
+  });
+  if (!resultado?.sent) {
+    return res.status(400).json({ error: resultado?.reason || "Nao foi possivel enviar a cobranca." });
+  }
+  await addHistory(null, req.user.id, "cobrou_saldo_adiantamento", `Cobranca enviada para ${adiantamento.solicitante_email || "solicitante"} referente a ${pendencias.length} adiantamento(s) pendente(s).`, {
+    adiantamento_id: adiantamento.id,
+    adiantamentos_ids: pendingIds,
+    numeros: pendencias.map((item) => item.numero),
+    saldo,
+    pendencias,
+    destinatario: adiantamento.solicitante_email || null,
+    resultado,
+  });
+  res.json({ ok: true, saldo, pendencias, destinatario: adiantamento.solicitante_email, resultado });
+}
 
 app.post("/api/adiantamentos", requireReembolsoPermission("reembolso_solicitar"), asyncRoute(async (req, res) => {
   const stamp = nowSql();
@@ -3624,7 +3840,7 @@ app.post("/api/prestacoes", requireReembolsoPermission("reembolso_solicitar"), a
     return res.status(400).json({ error: `Este prestador ja possui a prestacao aberta ${abertas[0].numero}. Finalize ou cancele antes de abrir uma nova.` });
   }
   const adiantamentos = await getAvailableAdiantamentos(solicitanteId);
-  const valorAdiantado = toMoney(adiantamentos.reduce((sum, item) => sum + Number(item.valor || 0), 0));
+  const valorAdiantado = toMoney(adiantamentos.reduce((sum, item) => sum + Number(item.saldo || 0), 0));
   const adiantamentoId = adiantamentos[0]?.id || null;
 
   const result = await execute(
@@ -4101,6 +4317,7 @@ app.get("/api/comprovantes/:id/visualizar", asyncRoute(async (req, res) => {
 }));
 
 app.post("/api/prestacoes/:id/enviar", requireReembolsoPermission("reembolso_solicitar"), asyncRoute(async (req, res) => {
+  const mensagem = String(req.body.justificativa || req.body.comentario || req.body.mensagem || "").trim();
   const detalhes = await query(`
     SELECT COUNT(*) AS despesas,
            SUM(CASE WHEN status_comprovante = 'pendente' THEN 1 ELSE 0 END) AS pendentes
@@ -4111,7 +4328,7 @@ app.post("/api/prestacoes/:id/enviar", requireReembolsoPermission("reembolso_sol
   if (Number(detalhes[0].pendentes || 0) > 0) return res.status(400).json({ error: "Existem despesas com comprovante pendente." });
 
   await execute("UPDATE rd_reembolso_prestacoes SET status = 'enviada_superior', enviado_em = ?, updated_at = ? WHERE id = ? AND status IN ('rascunho', 'reprovada_superior', 'reprovada_financeiro')", [nowSql(), nowSql(), req.params.id]);
-  await addHistory(req.params.id, req.body.usuario_id || null, "enviou_aprovacao", "Prestacao enviada para aprovacao do superior.");
+  await addHistory(req.params.id, req.body.usuario_id || null, "enviou_aprovacao", mensagem ? `Prestacao enviada para aprovacao do superior. Mensagem: ${mensagem}` : "Prestacao enviada para aprovacao do superior.");
   const detalhe = await reembolsoPrestacaoEmailResumo(req.params.id, "Uma prestacao de contas de reembolso foi enviada para aprovacao.");
   const prestacao = await getPrestacao(req.params.id);
   await sendReembolsoApprovalEmails({
@@ -4119,7 +4336,8 @@ app.post("/api/prestacoes/:id/enviar", requireReembolsoPermission("reembolso_sol
     detalhe,
     link: `${approvalCentralUrl()}?tipo=reembolso_superior&id=${encodeURIComponent(req.params.id)}`,
     emails: [REEMBOLSO_APPROVAL_FLOW[0].email],
-    prestacaoId: Number(req.params.id)
+    prestacaoId: Number(req.params.id),
+    mensagem
   });
   res.json({ ok: true });
 }));
@@ -4317,9 +4535,15 @@ app.post("/api/prestacoes/:id/sincronizar-omie-pagamento", requireReembolsoPermi
   res.json({ ok: true, resultado });
 }));
 
-app.post("/api/omie/sincronizar-pagamentos", requireReembolsoPermission("reembolso_integrar_omie"), asyncRoute(async (_req, res) => {
-  const resultados = await syncOmiePagamentos({ limit: 80 });
-  res.json({ ok: true, total: resultados.length, pagos: resultados.filter((item) => item.pago).length, resultados });
+app.post("/api/omie/sincronizar-pagamentos", requireReembolsoPermission("reembolso_integrar_omie"), asyncRoute(async (req, res) => {
+  const resultados = await syncOmiePagamentos({ limit: 80, force: Boolean(req.body?.force) });
+  res.json({
+    ok: true,
+    total: resultados.length,
+    pagos: resultados.filter((item) => item.pago).length,
+    erros: resultados.filter((item) => item.erro).length,
+    resultados,
+  });
 }));
 
 app.use((err, _req, res, _next) => {
@@ -4345,7 +4569,24 @@ async function runOmiePaymentSync() {
   }
 }
 
-ensureSchema()
+async function ensureSchemaWithRetry(maxAttempts = 5) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await ensureSchema();
+      return;
+    } catch (error) {
+      lastError = error;
+      console.error(`Falha ao iniciar schema do Reembolso de Despesas (tentativa ${attempt}/${maxAttempts}):`, error.message);
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 3000));
+      }
+    }
+  }
+  throw lastError;
+}
+
+ensureSchemaWithRetry()
   .then(() => {
     app.listen(port, host, () => {
       console.log(`Reembolso de Despesas em http://${host}:${port}`);

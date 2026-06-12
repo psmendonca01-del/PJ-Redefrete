@@ -90,6 +90,14 @@ const el = {
   newPrestador: document.querySelector("#newPrestador"),
   clearPrestador: document.querySelector("#clearPrestador"),
   closePrestadorModal: document.querySelector("#closePrestadorModal"),
+  prestadoresReport: document.querySelector("#prestadoresReport"),
+  prestadoresReportDialog: document.querySelector("#prestadoresReportDialog"),
+  closePrestadoresReport: document.querySelector("#closePrestadoresReport"),
+  prestadoresReportMeta: document.querySelector("#prestadoresReportMeta"),
+  prestadoresReportBody: document.querySelector("#prestadoresReportBody"),
+  printPrestadoresReport: document.querySelector("#printPrestadoresReport"),
+  pdfPrestadoresReport: document.querySelector("#pdfPrestadoresReport"),
+  xlsxPrestadoresReport: document.querySelector("#xlsxPrestadoresReport"),
   adiantamentoForm: document.querySelector("#adiantamentoForm"),
   adiantamentoBackdrop: document.querySelector("#adiantamentoBackdrop"),
   newAdiantamento: document.querySelector("#newAdiantamento"),
@@ -597,6 +605,7 @@ function applyAuthUi() {
   el.currentUserPerfil.textContent = state.authUser?.perfil || "-";
   document.querySelector(".settings-button").hidden = !canAccessSettings();
   el.newPrestador.hidden = !hasPermission("edit_prestadores");
+  if (el.prestadoresReport) el.prestadoresReport.hidden = !hasPermission("generate_reports");
   el.newAdiantamento.hidden = !hasPermission("manage_adiantamentos");
   el.newRescisao.hidden = !hasPermission("manage_rescisoes");
   document.querySelector('.nav-item[data-view="dashboard"]').hidden = !canViewFolhas();
@@ -855,6 +864,176 @@ function renderPrestadores() {
   el.prestadoresTable.querySelectorAll("[data-conta-prestador]").forEach((button) => {
     button.addEventListener("click", () => openPrestadorAccount(button.dataset.contaPrestador).catch((error) => toast(error.message)));
   });
+}
+
+function prestadoresReportQuery() {
+  const params = new URLSearchParams();
+  const search = el.searchPrestador?.value || "";
+  const status = el.prestadorStatusFilter?.value || "todos";
+  if (search) params.set("search", search);
+  if (status && status !== "todos") params.set("status", status);
+  return params.toString();
+}
+
+function reportDate(value) {
+  if (!value) return "";
+  return formatDate(String(value).slice(0, 10));
+}
+
+function reportMoneyValue(value) {
+  return typeof value === "number" ? money(value) : escapeHtml(value || "");
+}
+
+function prestadorReportRowsFromState() {
+  const term = (el.searchPrestador?.value || "").toLowerCase();
+  const status = el.prestadorStatusFilter?.value || "todos";
+  return state.prestadores
+    .filter((p) => {
+      if (status === "ativos" && !p.ativo) return false;
+      if (status === "inativos" && p.ativo) return false;
+      if (!term) return true;
+      return [
+        p.nome,
+        p.razao_social,
+        p.cpf,
+        p.cnpj,
+        p.email,
+        p.telefone,
+        p.cliente_nome,
+        p.unidade_nome,
+        p.projeto,
+        p.departamento,
+        p.funcao,
+        p.categoria,
+        p.banco,
+        p.agencia,
+        p.conta,
+      ].some((value) => String(value || "").toLowerCase().includes(term));
+    })
+    .sort((a, b) => String(a.nome || a.razao_social || "").localeCompare(String(b.nome || b.razao_social || ""), "pt-BR", { sensitivity: "base" }));
+}
+
+async function openPrestadoresReport() {
+  if (!hasPermission("generate_reports")) {
+    toast("Usuario sem permissao para gerar relatorio.");
+    return;
+  }
+  const rows = prestadorReportRowsFromState();
+  const data = {
+    gerado_em: new Date().toISOString(),
+    total: rows.length,
+    filtros: {
+      search: el.searchPrestador?.value || "",
+      status: el.prestadorStatusFilter?.value || "todos",
+    },
+    rows: rows.map((p) => ({
+      status: p.ativo ? "Ativo" : "Inativo",
+      nome: p.nome || "",
+      razao_social: p.razao_social || "",
+      cpf: p.cpf || "",
+      cnpj: p.cnpj || "",
+      email: p.email || "",
+      telefone: p.telefone || "",
+      cliente: p.cliente_nome || p.unidade_nome || "",
+      projeto: p.projeto || "",
+      departamento: p.departamento || "",
+      funcao: p.funcao || "",
+      categoria: p.categoria || "",
+      nivel_cargo: p.cargo_nivel === "gestao" ? "Gestão" : "Operação",
+      precificacao: isDailyPriced(p) ? "R$/dia trabalhado" : "R$/mês fechado",
+      data_admissao: p.data_admissao || "",
+      data_rescisao: p.data_rescisao || "",
+      valor_contrato: sensitiveMoney(p.salario_contrato),
+      valor_dia: sensitiveMoney(p.valor_dia),
+      banco: p.banco || "",
+      agencia: p.agencia || "",
+      conta: p.conta || "",
+      cpf_cnpj_titular: p.pix_cpf_cnpj || "",
+      omie_codigo_cliente: p.omie_codigo_cliente || "",
+    })),
+  };
+  const filters = [];
+  if (data.filtros?.search) filters.push(`Busca: ${escapeHtml(data.filtros.search)}`);
+  if (data.filtros?.status && data.filtros.status !== "todos") filters.push(`Status: ${escapeHtml(data.filtros.status)}`);
+  el.prestadoresReportMeta.textContent = `${data.total} registro(s)${filters.length ? ` | ${filters.join(" | ")}` : ""}`;
+  el.prestadoresReportBody.innerHTML = `
+    <div class="report-sheet">
+      <header class="report-brand">
+        <div class="report-logo"><img src="/assets/logo-redefrete-branco.png" alt="Redefrete" /></div>
+        <div>
+          <span>Cadastro de colaboradores PJ</span>
+          <h2>Relatório de prestadores</h2>
+          <small>Gerado em ${escapeHtml(new Date(data.gerado_em).toLocaleString("pt-BR"))}</small>
+        </div>
+        <strong>${data.total} registro(s)</strong>
+      </header>
+      <div class="report-table-wrap">
+        <table class="report-table">
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>Razão social</th>
+              <th>CPF/CNPJ</th>
+              <th>Contato</th>
+              <th>Contrato</th>
+              <th>Dados bancários</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.rows.map((row) => `
+              <tr>
+                <td><strong>${escapeHtml(row.nome)}</strong><small>${escapeHtml(row.funcao || "")}</small></td>
+                <td>${escapeHtml(row.razao_social)}<small>${escapeHtml(row.categoria || "")}</small></td>
+                <td>${escapeHtml(row.cpf || "-")}<small>${escapeHtml(row.cnpj || "-")}</small></td>
+                <td>${escapeHtml(row.email || "-")}<small>${escapeHtml(row.telefone || "-")}</small></td>
+                <td>
+                  ${escapeHtml(row.cliente || "-")} | ${escapeHtml(row.projeto || "-")}
+                  <small>${escapeHtml(row.departamento || "-")} | ${escapeHtml(row.nivel_cargo || "-")}</small>
+                  <small>${escapeHtml(row.precificacao || "-")} | ${reportMoneyValue(row.valor_contrato)}</small>
+                  <small>Admissão: ${escapeHtml(reportDate(row.data_admissao) || "-")}</small>
+                </td>
+                <td>
+                  Banco ${escapeHtml(row.banco || "-")} | Ag. ${escapeHtml(row.agencia || "-")}
+                  <small>Conta ${escapeHtml(row.conta || "-")}</small>
+                  <small>Titular ${escapeHtml(row.cpf_cnpj_titular || "-")}</small>
+                </td>
+                <td><strong>${escapeHtml(row.status)}</strong><small>${row.omie_codigo_cliente ? `Omie ${escapeHtml(row.omie_codigo_cliente)}` : "Sem código Omie"}</small></td>
+              </tr>
+            `).join("") || `<tr><td colspan="7">Nenhum prestador encontrado.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  el.prestadoresReportDialog.showModal();
+}
+
+function printPrestadoresReport() {
+  window.print();
+}
+
+async function downloadPrestadoresReportXlsx() {
+  const query = prestadoresReportQuery();
+  const response = await fetch(`/api/prestadores/relatorio-xlsx${query ? `?${query}` : ""}`, {
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text.replace(/\s+/g, " ").trim() || `Nao foi possivel baixar o XLSX (${response.status}).`);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const filename = match?.[1] || `cadastro-prestadores-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function renderSelects() {
@@ -3474,6 +3653,15 @@ el.searchPrestador.addEventListener("input", renderPrestadores);
 el.prestadorStatusFilter.addEventListener("change", () => {
   state.prestadorStatusFilter = el.prestadorStatusFilter.value;
   renderPrestadores();
+});
+el.prestadoresReport?.addEventListener("click", () => {
+  openPrestadoresReport().catch((error) => toast(error.message));
+});
+el.closePrestadoresReport?.addEventListener("click", () => el.prestadoresReportDialog?.close());
+el.printPrestadoresReport?.addEventListener("click", printPrestadoresReport);
+el.pdfPrestadoresReport?.addEventListener("click", printPrestadoresReport);
+el.xlsxPrestadoresReport?.addEventListener("click", () => {
+  downloadPrestadoresReportXlsx().catch((error) => toast(error.message));
 });
 el.adiantamentoFilters.forEach((button) => {
   button.addEventListener("click", () => {

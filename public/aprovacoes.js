@@ -257,7 +257,13 @@ async function showDetails(key) {
 async function approve(key) {
   const item = findItem(key);
   if (!item) return;
-  await api(item.approveUrl, { method: "POST", body: JSON.stringify(item.approveBody || {}) });
+  const body = { ...(item.approveBody || {}) };
+  if (item.tipo === "reembolso_superior") {
+    const justificativa = window.prompt("Mensagem opcional para o proximo aprovador ou financeiro. Deixe em branco para continuar sem mensagem.", "");
+    if (justificativa === null) return;
+    if (justificativa.trim()) body.justificativa = justificativa.trim();
+  }
+  await api(item.approveUrl, { method: "POST", body: JSON.stringify(body) });
   toast("Aprovação registrada.");
   await load();
 }

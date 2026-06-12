@@ -64,11 +64,20 @@ async function api(path, options = {}) {
   try {
     const response = await fetch(path, {
       headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+      credentials: "same-origin",
       ...fetchOptions
     });
-    const data = await response.json().catch(() => ({}));
+    const text = await response.text();
+    let data = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { error: text.replace(/\s+/g, " ").trim() };
+      }
+    }
     if (!response.ok) {
-      const error = new Error(data.error || "Falha na operação.");
+      const error = new Error(data.error || `Falha na operação. HTTP ${response.status}`);
       Object.assign(error, data, { status: response.status });
       throw error;
     }
@@ -305,6 +314,12 @@ function applyDashboardFilter(filter) {
   }
 }
 
+function promptOptionalApprovalMessage(title) {
+  const text = window.prompt(`${title}\n\nMensagem opcional. Deixe em branco para continuar sem mensagem.`, "");
+  if (text === null) return null;
+  return text.trim();
+}
+
 async function loadBootstrap() {
   const data = await api("/api/bootstrap", { progressTitle: "Carregando dados" });
   state.usuario = data.usuario;
@@ -398,9 +413,11 @@ function renderDashboard(dashboard) {
 
 function renderAdiantamentoSelect() {
   const solicitanteId = Number(document.querySelector("#prestacaoForm select[name='solicitante_id']")?.value || state.usuario?.id || 0);
-  const open = state.adiantamentos.filter((item) => item.status === "aprovado" && Number(item.solicitante_id) === solicitanteId);
+  const open = state.adiantamentos
+    .map((item) => ({ ...item, saldo: saldoAdiantamento(item.id) }))
+    .filter((item) => item.status === "aprovado" && Number(item.solicitante_id) === solicitanteId && item.saldo > 0.009);
   const openIds = new Set(open.map((item) => Number(item.id)));
-  const total = open.reduce((sum, item) => sum + Math.max(saldoAdiantamento(item.id), Number(item.valor || 0)), 0);
+  const total = open.reduce((sum, item) => sum + item.saldo, 0);
   const saldosPendentes = (state.adiantamentos || [])
     .filter((item) => Number(item.solicitante_id) === solicitanteId && !openIds.has(Number(item.id)))
     .map((item) => ({ ...item, saldo: saldoAdiantamento(item.id) }))
@@ -413,7 +430,7 @@ function renderAdiantamentoSelect() {
     lines.push(`<span class="pending-balance">Este prestador ja possui a prestação aberta <strong>${escapeHtml(prestacaoAberta.numero)}</strong>. Finalize ou cancele antes de abrir uma nova.</span>`);
   }
   if (open.length) {
-    lines.push(`Adiantamentos aprovados em aberto: <strong>${fmtMoney(total)}</strong><br><small>${open.map((item) => `${item.numero} (${fmtMoney(Math.max(saldoAdiantamento(item.id), Number(item.valor || 0)))})`).join(" | ")}</small>`);
+    lines.push(`Adiantamentos aprovados em aberto: <strong>${fmtMoney(total)}</strong><br><small>${open.map((item) => `${item.numero} (${fmtMoney(item.saldo)})`).join(" | ")}</small>`);
   } else {
     lines.push("Sem adiantamentos aprovados em aberto.");
   }
@@ -433,6 +450,7 @@ function renderAdiantamentos() {
       <td data-label="Status">${statusPill(row.status)} ${row.omie_status === "integrado" ? statusPill("omie_integrada") : ""}</td>
       <td data-label="Ação">
         <button class="small" data-vinculos-adiantamento="${row.id}">Vínculos</button>
+        ${(hasPerm("reembolso_financeiro") || hasPerm("reembolso_integrar_omie")) && saldoAdiantamento(row.id) > 0.009 ? `<button class="small" data-adiantamento-cobrar="${row.id}">Cobrar saldo</button>` : ""}
         ${canChangeAdiantamento(row.status) ? `
           <div class="row-actions">
             ${row.status !== "cancelado" ? `<button class="small" data-adiantamento-cancelar="${row.id}">Cancelar</button>` : ""}
@@ -1381,6 +1399,26 @@ document.addEventListener("click", async (event) => {
     }
   }
 
+  const adiantamentoCobrar = event.target.closest("[data-adiantamento-cobrar]");
+  if (adiantamentoCobrar) {
+    const row = state.adiantamentos.find((item) => Number(item.id) === Number(adiantamentoCobrar.dataset.adiantamentoCobrar));
+    const saldo = saldoAdiantamento(adiantamentoCobrar.dataset.adiantamentoCobrar);
+    if (!confirm(`Enviar e-mail de cobrança do saldo ${fmtMoney(saldo)} referente ao ${row?.numero || "adiantamento"}?`)) return;
+    try {
+      const id = adiantamentoCobrar.dataset.adiantamentoCobrar;
+      let data;
+      try {
+        data = await api(`/api/adiantamentos-cobranca/${id}`, { method: "POST", body: "{}" });
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        data = await api(`/api/adiantamentos/${id}/cobrar-saldo`, { method: "POST", body: "{}" });
+      }
+      showStatus(`Cobrança enviada para ${data.destinatario || "o solicitante"}: ${fmtMoney(data.saldo)} em ${data.pendencias?.length || 0} adiantamento(s).`);
+    } catch (err) {
+      showStatus(err.message, true);
+    }
+  }
+
   const adiantamentoIntegrar = event.target.closest("[data-adiantamento-integrar]");
   if (adiantamentoIntegrar) {
     if (!confirm("Integrar este adiantamento como transferência entre contas no Omie?")) return;
@@ -1509,8 +1547,16 @@ document.addEventListener("click", async (event) => {
     try {
       const id = action.dataset.id;
       const usuario = state.usuarios[0]?.id;
-      if (action.dataset.action === "enviar") await api(`/api/prestacoes/${id}/enviar`, { method: "POST", body: JSON.stringify({ usuario_id: usuario }) });
-      if (action.dataset.action === "aprovar") await api(`/api/prestacoes/${id}/aprovar-superior`, { method: "POST", body: JSON.stringify({}) });
+      if (action.dataset.action === "enviar") {
+        const justificativa = promptOptionalApprovalMessage("Deseja incluir uma mensagem para o aprovador?");
+        if (justificativa === null) return;
+        await api(`/api/prestacoes/${id}/enviar`, { method: "POST", body: JSON.stringify({ usuario_id: usuario, justificativa }) });
+      }
+      if (action.dataset.action === "aprovar") {
+        const justificativa = promptOptionalApprovalMessage("Deseja incluir uma mensagem para o proximo aprovador ou financeiro?");
+        if (justificativa === null) return;
+        await api(`/api/prestacoes/${id}/aprovar-superior`, { method: "POST", body: JSON.stringify({ justificativa }) });
+      }
       if (action.dataset.action === "finalizar") await api(`/api/prestacoes/${id}/finalizar-financeiro`, { method: "POST", body: JSON.stringify({}) });
       showStatus("Status atualizado.");
       byId("prestacaoDialog").close();
@@ -1541,8 +1587,13 @@ byId("integrarSelecionadosBtn").addEventListener("click", async () => {
 byId("syncOmieBtn").addEventListener("click", async () => {
   try {
     showBusy("Sincronizando pagamentos", "Consultando o status dos títulos no Omie.");
-    const data = await api("/api/omie/sincronizar-pagamentos", { method: "POST", progress: false });
-    showStatus(`Omie sincronizado. ${data.pagos || 0} pagamento(s) confirmado(s).`);
+    const data = await api("/api/omie/sincronizar-pagamentos", {
+      method: "POST",
+      progress: false,
+      body: JSON.stringify({ force: true })
+    });
+    const erros = data.erros ? ` ${data.erros} erro(s) na consulta.` : "";
+    showStatus(`Omie sincronizado. ${data.pagos || 0} pagamento(s) confirmado(s).${erros}`);
     await loadAll();
   } catch (err) {
     showStatus(err.message, true);
@@ -1632,16 +1683,22 @@ byId("prestacaoForm").addEventListener("submit", async (event) => {
 byId("devolucaoForm")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
+  const submitButton = form.querySelector('[type="submit"]');
+  if (form.dataset.submitting === "1") return;
+  form.dataset.submitting = "1";
+  if (submitButton) submitButton.disabled = true;
   try {
     showBusy("Registrando devolução", "Lançando a transferência de devolução no Omie.");
-    await api("/api/adiantamentos/devolucoes", { method: "POST", progress: false, body: JSON.stringify(formDataJson(form)) });
+    const result = await api("/api/adiantamentos/devolucoes", { method: "POST", progress: false, body: JSON.stringify(formDataJson(form)) });
     form.reset();
     byId("devolucaoDialog")?.close();
-    showStatus("Devolução registrada e integrada no Omie.");
+    showStatus(result.duplicado ? "Devolução já estava registrada. Nenhum novo lançamento foi enviado ao Omie." : "Devolução registrada e integrada no Omie.");
     await loadAll();
   } catch (err) {
     showStatus(err.message, true);
   } finally {
+    form.dataset.submitting = "";
+    if (submitButton) submitButton.disabled = false;
     hideBusy();
   }
 });

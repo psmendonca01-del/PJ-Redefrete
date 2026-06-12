@@ -208,6 +208,7 @@
                   <option value="ativos">Ativos</option>
                   <option value="inativos">Inativos</option>
                 </select>
+                <button type="button" id="prestadoresReport">Relatório</button>
                 <button type="button" id="newPrestador" class="primary">Novo</button>
               </div>
             </div>
@@ -578,6 +579,21 @@
       </div>
       <div id="compositionBody" class="composition-body"></div>
     </div>
+    <dialog id="prestadoresReportDialog" class="report-dialog">
+      <div class="report-dialog-head">
+        <div>
+          <strong>Relatório de cadastro de prestadores</strong>
+          <span id="prestadoresReportMeta">Prévia do relatório</span>
+        </div>
+        <button type="button" id="closePrestadoresReport" class="icon-button" aria-label="Fechar">&times;</button>
+      </div>
+      <div class="report-dialog-actions">
+        <button type="button" id="printPrestadoresReport">Imprimir</button>
+        <button type="button" id="pdfPrestadoresReport" class="primary">PDF</button>
+        <button type="button" id="xlsxPrestadoresReport">Arquivo XLSX</button>
+      </div>
+      <div id="prestadoresReportBody" class="report-preview"></div>
+    </dialog>
     <div id="compositionBackdrop" class="modal-backdrop" aria-hidden="true"></div>
     <div id="configBackdrop" class="modal-backdrop"></div>
     <div id="busyOverlay" class="busy-overlay" hidden>
@@ -592,7 +608,7 @@
       </div>
     </div>
     <div id="toast" role="status"></div>
-    <script src="/app.js?v=omie-approval-audit-20260605"></script>
+    <script src="/app.js?v=prestadores-relatorio-xlsx-route-20260610"></script>
   </body>
 </html>
 
